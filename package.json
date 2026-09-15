@@ -1,0 +1,161 @@
+{
+  "name": "zoo-sync",
+  "displayName": "Zoo Sync",
+  "description": "Sync VS Code settings, keybindings and extensions across Windows, macOS and Linux through a private GitHub repository.",
+  "version": "0.1.0",
+  "publisher": "zoosewu",
+  "private": true,
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "settings sync",
+    "keybindings",
+    "extensions",
+    "github"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "zooSync.configureRepository",
+        "title": "Configure Repository",
+        "category": "Zoo Sync"
+      },
+      {
+        "command": "zooSync.syncNow",
+        "title": "Sync Now",
+        "category": "Zoo Sync"
+      },
+      {
+        "command": "zooSync.signIn",
+        "title": "Sign In with GitHub",
+        "category": "Zoo Sync"
+      },
+      {
+        "command": "zooSync.signOut",
+        "title": "Sign Out",
+        "category": "Zoo Sync"
+      },
+      {
+        "command": "zooSync.showLog",
+        "title": "Show Log",
+        "category": "Zoo Sync"
+      },
+      {
+        "command": "zooSync.toggleAutoSync",
+        "title": "Toggle Auto Sync",
+        "category": "Zoo Sync"
+      },
+      {
+        "command": "zooSync.resetLocalState",
+        "title": "Reset Local Sync State",
+        "category": "Zoo Sync"
+      }
+    ],
+    "configuration": {
+      "title": "Zoo Sync",
+      "properties": {
+        "zooSync.repository": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "markdownDescription": "Private GitHub repository used as sync storage, in `owner/name` form. Use **Zoo Sync: Configure Repository** to set or create it.",
+          "scope": "application"
+        },
+        "zooSync.branch": {
+          "type": "string",
+          "default": "main",
+          "description": "Branch that stores the synced data.",
+          "scope": "application"
+        },
+        "zooSync.autoSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sync on startup, poll the remote periodically and upload local changes automatically.",
+          "scope": "application"
+        },
+        "zooSync.remotePollMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "description": "How often (minutes) to check the remote repository for changes.",
+          "scope": "application"
+        },
+        "zooSync.localSyncMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "How often (minutes) to upload detected local changes.",
+          "scope": "application"
+        },
+        "zooSync.ignoredSettings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "zooSync.autoSync",
+            "http.proxy*",
+            "*.path",
+            "*Path",
+            "remote.SSH.configFile",
+            "terminal.integrated.cwd",
+            "window.zoomLevel",
+            "*.lastCheck*",
+            "*.timestamp",
+            "*.machineId"
+          ],
+          "markdownDescription": "Setting keys that are never synced. `*` matches any characters (including `.`); matching is case-sensitive. Keys that look like secrets (`apiKey`, `accessToken`, `password`, `secret`) are always skipped.",
+          "scope": "application"
+        },
+        "zooSync.ignoredExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extension ids (publisher.name) that are never synced.",
+          "scope": "application"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "tsc --noEmit && eslint src test && node esbuild.js --production",
+    "compile": "tsc --noEmit && eslint src test && node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "check-types": "tsc --noEmit && tsc -p test/unit",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "compile-tests": "tsc -p . --outDir out",
+    "test:integration": "tsc -p . --outDir out && node esbuild.js && vscode-test",
+    "package": "vsce package --no-dependencies --skip-license --allow-missing-repository"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.2",
+    "@types/vscode": "~1.101.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.10.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0"
+  }
+}
