@@ -1,3 +1,4 @@
+import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseMeta, parseSettings } from '../../src/sync/documents';
 import { SyncEngine, type SyncOptions } from '../../src/sync/engine';
@@ -18,8 +19,9 @@ import type { Platform } from '../../src/sync/types';
 let clock = Date.parse('2026-09-16T00:00:00Z');
 const tick = () => (clock += 1000);
 
-const USER_DIR = '/u/User';
-const HOME_DIR = '/home/me';
+// Built with join so the fakes speak the same path separators as the engine on every platform.
+const USER_DIR = join('/u', 'User');
+const HOME_DIR = join('/home', 'me');
 
 class FakeRemote implements RemoteStore {
   private readonly commits = new Map<string, Record<string, string>>();
@@ -129,10 +131,9 @@ class FakeLocal implements LocalStore {
   }
 
   async listFiles(dir: string, matches: (relativePath: string) => boolean, limit: number): Promise<string[]> {
-    const prefix = `${dir}/`;
     return [...this.files.keys()]
-      .filter((path) => path.startsWith(prefix))
-      .map((path) => path.slice(prefix.length))
+      .map((path) => relative(dir, path).split(/[\\/]/).join('/'))
+      .filter((path) => path !== '' && !path.startsWith('..'))
       .filter(matches)
       .slice(0, limit);
   }
@@ -204,11 +205,11 @@ function machine(remote: FakeRemote, name: string, options: MachineOptions = {})
 async function twoMachines(options: MachineOptions = {}) {
   const remote = new FakeRemote();
   const a = machine(remote, 'a', options);
-  a.local.set(`${USER_DIR}/settings.json`, '{\n  "editor.fontSize": 14\n}');
+  a.local.set(join(USER_DIR, 'settings.json'), '{\n  "editor.fontSize": 14\n}');
   a.local.extensions.set('Default', ['x.keep', 'x.drop']);
   await a.sync();
   const b = machine(remote, 'b', options);
-  b.local.set(`${USER_DIR}/settings.json`, '{\n  "git.path": "C:/git"\n}');
+  b.local.set(join(USER_DIR, 'settings.json'), '{\n  "git.path": "C:/git"\n}');
   b.local.extensions.set('Default', ['x.keep', 'x.drop']);
   await b.sync({ initialChoice: 'download' });
   return { remote, a, b };
@@ -219,10 +220,10 @@ describe('SyncEngine', () => {
     const remote = new FakeRemote();
     const a = machine(remote, 'a');
     a.local.set(
-      `${USER_DIR}/settings.json`,
+      join(USER_DIR, 'settings.json'),
       '{\n  // font\n  "editor.fontSize": 14,\n  "git.path": "/usr/bin/git",\n  "openai.apiKey": "sk-1"\n}',
     );
-    a.local.set(`${USER_DIR}/keybindings.json`, '[{ "key": "ctrl+k", "command": "x" }]');
+    a.local.set(join(USER_DIR, 'keybindings.json'), '[{ "key": "ctrl+k", "command": "x" }]');
     a.local.extensions.set('Default', ['Esbenp.Prettier-VSCode', 'ignored.ext']);
 
     const report = await a.sync();
@@ -256,7 +257,7 @@ describe('SyncEngine', () => {
   it('does not commit when only comments, formatting or ignored keys change', async () => {
     const { remote, a } = await twoMachines();
     const commits = remote.messages.length;
-    a.local.set(`${USER_DIR}/settings.json`, '// reformatted\n{"git.path": "/opt/git", "editor.fontSize":14}');
+    a.local.set(join(USER_DIR, 'settings.json'), '// reformatted\n{"git.path": "/opt/git", "editor.fontSize":14}');
 
     expect((await a.sync()).uploaded).toEqual([]);
     expect(remote.messages).toHaveLength(commits);
@@ -264,7 +265,7 @@ describe('SyncEngine', () => {
 
   it('downloads a file only when its blob id changed', async () => {
     const { remote, a, b } = await twoMachines();
-    b.local.set(`${USER_DIR}/settings.json`, '{"git.path": "C:/git", "editor.fontSize": 16}');
+    b.local.set(join(USER_DIR, 'settings.json'), '{"git.path": "C:/git", "editor.fontSize": 16}');
     await b.sync();
     remote.readCalls = [];
 
@@ -277,22 +278,22 @@ describe('SyncEngine', () => {
   it('asks how to start on a new machine and downloads without touching ignored keys', async () => {
     const remote = new FakeRemote();
     const a = machine(remote, 'a');
-    a.local.set(`${USER_DIR}/settings.json`, '{"editor.fontSize": 14}');
+    a.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 14}');
     a.local.extensions.set('Default', ['a.one', 'a.two']);
     await a.sync();
 
     const b = machine(remote, 'b');
-    b.local.set(`${USER_DIR}/settings.json`, '// mine\n{\n  "editor.fontSize": 20,\n  "git.path": "C:/git"\n}');
+    b.local.set(join(USER_DIR, 'settings.json'), '// mine\n{\n  "editor.fontSize": 20,\n  "git.path": "C:/git"\n}');
     b.local.extensions.set('Default', ['a.one', 'b.extra']);
     expect((await b.sync()).outcome).toBe('needs-initial-choice');
 
     const report = await b.sync({ initialChoice: 'download' });
 
-    expect(parseSettings(b.local.files.get(`${USER_DIR}/settings.json`)?.text)).toEqual({
+    expect(parseSettings(b.local.files.get(join(USER_DIR, 'settings.json'))?.text)).toEqual({
       'editor.fontSize': 14,
       'git.path': 'C:/git',
     });
-    expect(b.local.files.get(`${USER_DIR}/settings.json`)?.text).toContain('// mine');
+    expect(b.local.files.get(join(USER_DIR, 'settings.json'))?.text).toContain('// mine');
     expect(report.installed).toEqual(['a.two']);
     expect(report.pendingUninstall).toEqual(['b.extra']);
     expect(report.uploaded).toEqual([]);
@@ -300,20 +301,20 @@ describe('SyncEngine', () => {
 
   it('merges edits to different keys and resolves conflicts by update time', async () => {
     const { remote, a, b } = await twoMachines();
-    a.local.set(`${USER_DIR}/settings.json`, '{"editor.fontSize": 16}');
+    a.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 16}');
     await a.sync();
-    b.local.set(`${USER_DIR}/settings.json`, '{"editor.fontSize": 14, "git.path": "C:/git", "editor.tabSize": 2}');
+    b.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 14, "git.path": "C:/git", "editor.tabSize": 2}');
     await b.sync();
     await a.sync({ localChanged: false });
 
     const expected = { 'editor.fontSize': 16, 'editor.tabSize': 2 };
     expect(parseSettings(remote.files['profiles/Default/settings.json'])).toEqual(expected);
-    expect(parseSettings(a.local.files.get(`${USER_DIR}/settings.json`)?.text)).toEqual(expected);
+    expect(parseSettings(a.local.files.get(join(USER_DIR, 'settings.json'))?.text)).toEqual(expected);
 
     // Now both change the same key; the newer edit wins.
-    a.local.set(`${USER_DIR}/settings.json`, '{"editor.fontSize": 18, "editor.tabSize": 2}');
+    a.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 18, "editor.tabSize": 2}');
     await a.sync();
-    b.local.set(`${USER_DIR}/settings.json`, '{"editor.fontSize": 20, "editor.tabSize": 2, "git.path": "C:/git"}');
+    b.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 20, "editor.tabSize": 2, "git.path": "C:/git"}');
     const report = await b.sync();
     expect(report.conflicts).toEqual(['profiles/Default/settings.json']);
     expect(parseSettings(remote.files['profiles/Default/settings.json'])['editor.fontSize']).toBe(20);
@@ -322,10 +323,10 @@ describe('SyncEngine', () => {
   it('keeps keybindings per platform and preserves comments on download', async () => {
     const remote = new FakeRemote();
     const win = machine(remote, 'w', { platform: 'windows' });
-    win.local.set(`${USER_DIR}/keybindings.json`, '// win\n[{"key":"ctrl+a","command":"a"}]');
+    win.local.set(join(USER_DIR, 'keybindings.json'), '// win\n[{"key":"ctrl+a","command":"a"}]');
     await win.sync();
     const mac = machine(remote, 'm', { platform: 'macos' });
-    mac.local.set(`${USER_DIR}/keybindings.json`, '[{"key":"cmd+a","command":"a"}]');
+    mac.local.set(join(USER_DIR, 'keybindings.json'), '[{"key":"cmd+a","command":"a"}]');
     await mac.sync({ initialChoice: 'merge' });
 
     expect(remote.files['profiles/Default/keybindings/windows.json']).toContain('// win');
@@ -333,16 +334,16 @@ describe('SyncEngine', () => {
 
     const win2 = machine(remote, 'w2', { platform: 'windows' });
     await win2.sync({ initialChoice: 'download' });
-    expect(win2.local.files.get(`${USER_DIR}/keybindings.json`)?.text).toBe('// win\n[{"key":"ctrl+a","command":"a"}]');
+    expect(win2.local.files.get(join(USER_DIR, 'keybindings.json'))?.text).toBe('// win\n[{"key":"ctrl+a","command":"a"}]');
   });
 
   it('syncs profile-relative and home files, and skips credential-looking names', async () => {
     const files: FileSpec[] = ['snippets/**', '~/.gitconfig'];
     const remote = new FakeRemote();
     const a = machine(remote, 'a', { files });
-    a.local.set(`${USER_DIR}/snippets/py.json`, '{ "a": 1 }');
-    a.local.set(`${USER_DIR}/snippets/id_rsa`, 'secret');
-    a.local.set(`${HOME_DIR}/.gitconfig`, '[user]\n\tname = me\n');
+    a.local.set(join(USER_DIR, 'snippets/py.json'), '{ "a": 1 }');
+    a.local.set(join(USER_DIR, 'snippets/id_rsa'), 'secret');
+    a.local.set(join(HOME_DIR, '.gitconfig'), '[user]\n\tname = me\n');
     await a.sync();
 
     expect(Object.keys(remote.files).sort()).toContain('files/common/.gitconfig');
@@ -352,53 +353,53 @@ describe('SyncEngine', () => {
 
     const b = machine(remote, 'b', { files });
     await b.sync({ initialChoice: 'download' });
-    expect(b.local.files.get(`${USER_DIR}/snippets/py.json`)?.text).toBe('{ "a": 1 }');
-    expect(b.local.files.get(`${HOME_DIR}/.gitconfig`)?.text).toBe('[user]\n\tname = me\n');
+    expect(b.local.files.get(join(USER_DIR, 'snippets/py.json'))?.text).toBe('{ "a": 1 }');
+    expect(b.local.files.get(join(HOME_DIR, '.gitconfig'))?.text).toBe('[user]\n\tname = me\n');
   });
 
   it('propagates a locally deleted file and asks before deleting one removed elsewhere', async () => {
     const files: FileSpec[] = ['snippets/**'];
     const remote = new FakeRemote();
     const a = machine(remote, 'a', { files });
-    a.local.set(`${USER_DIR}/snippets/py.json`, '{ "a": 1 }');
-    a.local.set(`${USER_DIR}/snippets/go.json`, '{ "b": 2 }');
+    a.local.set(join(USER_DIR, 'snippets/py.json'), '{ "a": 1 }');
+    a.local.set(join(USER_DIR, 'snippets/go.json'), '{ "b": 2 }');
     await a.sync();
     const b = machine(remote, 'b', { files });
     await b.sync({ initialChoice: 'download' });
 
-    a.local.files.delete(`${USER_DIR}/snippets/go.json`);
+    a.local.files.delete(join(USER_DIR, 'snippets/go.json'));
     const upload = await a.sync();
     expect(upload.removed).toEqual(['profiles/Default/files/common/snippets/go.json']);
     expect(Object.keys(remote.files)).not.toContain('profiles/Default/files/common/snippets/go.json');
 
     const download = await b.sync({ localChanged: false });
-    expect(download.pendingDeletions).toEqual([`${USER_DIR}/snippets/go.json`]);
-    expect(b.local.files.has(`${USER_DIR}/snippets/go.json`)).toBe(true);
+    expect(download.pendingDeletions).toEqual([join(USER_DIR, 'snippets/go.json')]);
+    expect(b.local.files.has(join(USER_DIR, 'snippets/go.json'))).toBe(true);
 
     // Keeping the file stops it from being synced, instead of re-uploading it forever.
     expect(await b.engine.resolvePendingDeletions([])).toEqual([]);
     const after = await b.sync();
     expect(after.uploaded).toEqual([]);
-    expect(b.local.files.has(`${USER_DIR}/snippets/go.json`)).toBe(true);
+    expect(b.local.files.has(join(USER_DIR, 'snippets/go.json'))).toBe(true);
   });
 
   it('deletes a file the user confirms, keeping the other one', async () => {
     const files: FileSpec[] = ['snippets/**'];
     const remote = new FakeRemote();
     const a = machine(remote, 'a', { files });
-    a.local.set(`${USER_DIR}/snippets/py.json`, '{ "a": 1 }');
+    a.local.set(join(USER_DIR, 'snippets/py.json'), '{ "a": 1 }');
     await a.sync();
     const b = machine(remote, 'b', { files });
     await b.sync({ initialChoice: 'download' });
 
-    a.local.files.delete(`${USER_DIR}/snippets/py.json`);
+    a.local.files.delete(join(USER_DIR, 'snippets/py.json'));
     await a.sync();
     await b.sync({ localChanged: false });
 
-    expect(await b.engine.resolvePendingDeletions([`${USER_DIR}/snippets/py.json`])).toEqual([
-      `${USER_DIR}/snippets/py.json`,
+    expect(await b.engine.resolvePendingDeletions([join(USER_DIR, 'snippets/py.json')])).toEqual([
+      join(USER_DIR, 'snippets/py.json'),
     ]);
-    expect(b.local.files.has(`${USER_DIR}/snippets/py.json`)).toBe(false);
+    expect(b.local.files.has(join(USER_DIR, 'snippets/py.json'))).toBe(false);
     expect((await b.sync()).uploaded).toEqual([]);
   });
 
@@ -408,11 +409,11 @@ describe('SyncEngine', () => {
     const a = machine(remote, 'a', { profiles });
     a.local.profiles = [
       { name: 'Default', dir: USER_DIR, isDefault: true },
-      { name: 'Work', dir: `${USER_DIR}/profiles/w1`, isDefault: false },
+      { name: 'Work', dir: join(USER_DIR, 'profiles/w1'), isDefault: false },
     ];
     a.local.extensions.set('Work', ['work.ext']);
-    a.local.set(`${USER_DIR}/settings.json`, '{"editor.fontSize": 14}');
-    a.local.set(`${USER_DIR}/profiles/w1/settings.json`, '{"editor.fontSize": 20}');
+    a.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 14}');
+    a.local.set(join(USER_DIR, 'profiles/w1/settings.json'), '{"editor.fontSize": 20}');
 
     await a.sync();
 
@@ -424,7 +425,7 @@ describe('SyncEngine', () => {
   it('reports profiles that are configured but missing, and ones only in the repository', async () => {
     const remote = new FakeRemote();
     const a = machine(remote, 'a', { profiles: ['Default', 'Work'] });
-    a.local.set(`${USER_DIR}/settings.json`, '{"editor.fontSize": 14}');
+    a.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 14}');
     const first = await a.sync();
     expect(first.missingProfiles).toEqual(['Work']);
     expect(Object.keys(remote.files)).not.toContain('profiles/Work/settings.json');
@@ -495,8 +496,8 @@ describe('SyncEngine', () => {
       'extensions.json': '["a.one"]',
     });
     const a = machine(remote, 'a');
-    a.local.set(`${USER_DIR}/settings.json`, '// old\n{"editor.fontSize": 14}');
-    a.local.set(`${USER_DIR}/keybindings.json`, '[{"key":"ctrl+a","command":"a"}]');
+    a.local.set(join(USER_DIR, 'settings.json'), '// old\n{"editor.fontSize": 14}');
+    a.local.set(join(USER_DIR, 'keybindings.json'), '[{"key":"ctrl+a","command":"a"}]');
     a.local.extensions.set('Default', ['a.one']);
 
     const report = await a.sync({ initialChoice: 'download' });
@@ -519,7 +520,7 @@ describe('SyncEngine', () => {
 
   it('retries on top of a concurrent push', async () => {
     const { remote, a } = await twoMachines();
-    a.local.set(`${USER_DIR}/settings.json`, '{"editor.fontSize": 14, "editor.tabSize": 4}');
+    a.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 14, "editor.tabSize": 4}');
     remote.beforeCommit = () => remote.push({ 'profiles/Default/extensions.json': '["x.drop", "x.keep", "x.new"]\n' });
 
     const report = await a.sync();
@@ -542,7 +543,7 @@ describe('SyncEngine', () => {
   it('refuses to sync a settings file with syntax errors', async () => {
     const { remote, a } = await twoMachines();
     const commits = remote.messages.length;
-    a.local.set(`${USER_DIR}/settings.json`, '{ "editor.fontSize": }');
+    a.local.set(join(USER_DIR, 'settings.json'), '{ "editor.fontSize": }');
 
     await expect(a.sync()).rejects.toThrow(/syntax errors/);
     expect(remote.messages).toHaveLength(commits);
