@@ -1,12 +1,14 @@
 # Zoo Sync
 
-透過**私有 GitHub repository**，在 Windows、macOS、Linux 之間同步 VS Code 的 `settings.json`、`keybindings.json` 與擴充套件列表。
+透過**私有 GitHub repository**，在 Windows、macOS、Linux 之間同步 VS Code 的 `settings.json`、`keybindings.json`、擴充套件列表與自訂檔案，並可分 profile 同步。
 
 ## 功能
 
 - **settings.json**：所有平台共用一份，以 top-level key 為單位做三方合併。本機檔案的註解與格式會保留。
 - **keybindings.json**：依平台各存一份（`keybindings/windows.json`、`macos.json`、`linux.json`），整份同步並保留註解。
 - **擴充套件**：只記錄 extension id（不記版本）。遠端新增的會自動安裝；其他機器移除的會先詢問，再決定要不要在這台移除。
+- **自訂檔案**：`zooSync.files` 可以指定 VS Code 使用者目錄底下的檔案（如 `snippets/**`、`tasks.json`）或家目錄的檔案（如 `~/.gitconfig`），支援 glob 與每平台不同路徑。
+- **Profile**：`zooSync.profiles` 列出的每個 profile 各自同步自己的設定、快捷鍵、擴充套件與自訂檔案。
 - **不會誤判變更**：比對前會把內容正規化（排序 key、去掉註解與格式），`meta.json` 裡的 update time 也不參與比對。內容沒變就不會產生 commit。
 - **衝突處理**：兩邊改到同一個 key（或同一平台的 keybindings）時，保留 update time 較新的一方，並寫進 log。舊的值仍可在 git 歷史中找回。
 
@@ -39,22 +41,57 @@ Zoo Sync 不會發布到 VS Code Marketplace。請從 GitHub Releases 下載 `zo
 
 同時開多個 VS Code 視窗時，會透過鎖檔確保同一時間只有一個視窗在同步。
 
+## 自訂檔案
+
+```jsonc
+"zooSync.files": [
+  "snippets/**",        // 相對路徑 → 每個同步的 profile 各自一份
+  "tasks.json",
+  "mcp.json",
+  "~/.gitconfig",       // ~ 開頭 → 機器層級，與 profile 無關
+  { "path": "~/.config/starship.toml", "perPlatform": true },          // 每個平台各存一份
+  { "path": { "windows": "~/AppData/Roaming/x.toml", "*": "~/.config/x.toml" } }
+]
+```
+
+- glob 只支援 `*`（不跨目錄）與 `**`（跨目錄）。符號連結不會被追蹤，`.git` 與 `node_modules` 會跳過。
+- 這些檔案無法像 settings 那樣逐 key 合併，因此採整份檔案、update time 較新者勝。
+- 只允許使用者目錄或家目錄底下的路徑。其他絕對路徑、含 `..` 的路徑會被拒絕並記錄在 log。
+- 超過 1 MB、非文字、或檔名像機密資料的（`id_rsa`、`*.pem`、`.env`、`credentials*` 等）會跳過。
+- **新增與更新自動套用；刪除會先詢問**。被刪除的檔案在刪除前會複製到擴充套件 globalStorage 的 `trash/` 目錄。選擇保留的檔案之後就不再同步。
+
+## Profile
+
+`zooSync.profiles` 預設是 `["Default"]`，可用指令 **Zoo Sync: Choose Profiles to Sync** 勾選。每個 profile 在 repository 裡有自己的目錄。
+
+- profile 的內容是直接從磁碟讀寫的，所以**任何視窗都能同步所有列出的 profile**。
+- **擴充套件例外**：VS Code 只能把套件安裝到目前視窗的 profile，也沒有公開 API 能得知目前是哪個 profile。Zoo Sync 會從 VS Code 自己的 `storage.json` 反查（有開資料夾或工作區的視窗才查得到）。清單一律同步；安裝與移除只在能確認 profile 的視窗執行，其餘等你切換過去時再補上。
+- 遠端有、本機沒有的 profile **只會提示，不會自動建立**——profile 清單由 VS Code 主程序管理。請先在 VS Code 裡建立同名 profile。
+
 ## Repository 結構
 
 ```
-meta.json                 每個資源的 updatedAt / updatedBy
-settings.json             共用設定（已移除排除的 key）
-keybindings/<platform>.json
-extensions.json           排序過的 extension id 陣列
+meta.json                                   每個資源的 updatedAt / updatedBy
+profiles/Default/settings.json
+profiles/Default/keybindings/<platform>.json
+profiles/Default/extensions.json
+profiles/Default/files/common/<相對路徑>     自訂檔案
+profiles/Default/files/<platform>/<相對路徑> perPlatform 的版本
+profiles/Work/…                             其他 profile
+files/common/<家目錄相對路徑>                機器層級自訂檔案
 ```
 
-commit message 格式：`sync: settings, extensions from linux@host at 2026-09-15T12:00:00.000Z`
+commit message 格式：`sync: profiles/Default/settings.json, … from linux@host at 2026-09-16T12:00:00.000Z`
+
+v1.x 建立的 repository（扁平結構）會在第一次同步時自動搬到上面的結構，並保留註解與 update time。
 
 ## 設定
 
 | 設定 | 預設值 | 說明 |
 |---|---|---|
 | `zooSync.repository` | `""` | `owner/name` |
+| `zooSync.profiles` | `["Default"]` | 要同步的 profile 名稱 |
+| `zooSync.files` | `[]` | 額外同步的檔案，見上方說明 |
 | `zooSync.branch` | `main` | 儲存同步資料的 branch，不存在時會自動建立 |
 | `zooSync.autoSync` | `true` | 自動同步（此設定本身不會被同步） |
 | `zooSync.remotePollMinutes` | `30` | 檢查遠端的間隔 |
@@ -78,6 +115,8 @@ commit message 格式：`sync: settings, extensions from linux@host at 2026-09-1
 ## 指令
 
 - **Zoo Sync: Configure Repository**：設定或建立同步用的 repository
+- **Zoo Sync: Choose Profiles to Sync**：勾選要同步的 profile
+- **Zoo Sync: Add File to Sync**：把目前開啟的檔案（或手動輸入的路徑）加進 `zooSync.files`
 - **Zoo Sync: Sync Now**：立即同步
 - **Zoo Sync: Sign In with GitHub** / **Sign Out**：登入，或讓 Zoo Sync 停止使用 GitHub 帳號（帳號本身請從 Accounts 選單移除）
 - **Zoo Sync: Toggle Auto Sync**：開關自動同步
@@ -86,8 +125,9 @@ commit message 格式：`sync: settings, extensions from linux@host at 2026-09-1
 
 ## 已知限制
 
-- 只同步 **Default profile**。VS Code 沒有提供可以取得目前 profile 的穩定 API。
-- 在 **Remote 視窗**（SSH、WSL、Dev Containers）中只同步 settings 與 keybindings，擴充套件同步會略過。
+- **空白視窗**（沒有開資料夾或工作區）無法判斷所屬 profile，因此只同步檔案，不會安裝或移除擴充套件。
+- 在 **Remote 視窗**（SSH、WSL、Dev Containers）中不會安裝或移除擴充套件，因為會裝到遠端主機上。
+- 不同步各擴充套件的內部狀態（`globalStorage`）。
 - 在 marketplace 上找不到的擴充套件（例如只提供 VSIX 的套件，或 VSCodium 使用的 Open VSX 上沒有的套件）會安裝失敗。失敗會記錄在 log，但**不會**因此從遠端清單中移除，之後每次完整同步都會重試。
 - `settings.json` 有語法錯誤，或在編輯器中有尚未存檔的修改時，會暫停同步，直到修正或存檔。
 
@@ -121,5 +161,5 @@ pnpm run package        # 產出 .vsix
 
 - `src/sync/`：純邏輯，不依賴 `vscode`，可以直接用 vitest 測試。包含正規化、排除清單、三方合併、同步引擎、狀態檔與跨視窗鎖。
 - `src/github/`：GitHub REST API（Git Database API，以原生 `fetch` 呼叫）與登入。
-- `src/local/`：讀寫本機設定檔與管理擴充套件。
+- `src/local/`：讀寫本機設定檔、解析 profile（`storage.json`）與管理擴充套件。
 - `src/syncController.ts`：排程、變更偵測與所有使用者互動。同步引擎本身不會跳出任何詢問。

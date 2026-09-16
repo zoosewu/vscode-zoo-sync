@@ -56,7 +56,23 @@
 - [x] push 到 GitHub 後實際驗證：CI 在 Windows / macOS / Linux 三個平台全數通過（本機無法執行的整合測試在此得到驗證）；release-please 開出 PR #1，合併後產生 tag `v1.0.0`、Release 與附件 `zoo-sync-1.0.0.vsix`（22.5 KB）
 - [x] 修正 `changelog-sections`：section 名稱不需自帶 `###`，否則 CHANGELOG 會出現 `### ### Added`（已同步修正既有的 CHANGELOG.md）
 
+## 11. v2：自訂檔案同步 + Profile 支援
+- [x] 查證：穩定版 API 無 profile 介面；`globalStorageHome` 永遠指向 Default profile；profile 結構與 `profileAssociations` 格式
+- [x] 與使用者確認四個決策（路徑範圍、profile 清單、擴充套件延後安裝、刪除先詢問）
+- [x] `sync/pathSpec.ts`、`sync/resources.ts`、`sync/hash.ts`、`sync/legacy.ts`、`local/walk.ts`、`local/profileStorage.ts`
+- [x] 引擎改為資源清單導向：刪除傳播、blob sha 快取（未變動的檔案不重新下載）、v1→v2 遷移
+- [x] `repoStore.listTree` 與帶刪除的 commit；狀態檔 v1→v2 升級（不會重新詢問首次同步）
+- [x] controller：動態 watcher、刪除詢問、`Choose Profiles to Sync`、`Add File to Sync`
+- [x] 測試：151 個單元測試通過；端到端 smoke test 涵蓋遷移、雙 profile、自訂檔案、刪除流程
+- [ ] 以真實 GitHub 帳號在兩台電腦上驗證 profile 與自訂檔案
+
 ## Review
+
+### v2 驗證中發現並修正的問題
+- **`.gitconfig` 不會被同步**：目錄走訪用 `startsWith('.git')` 跳過 `.git` 目錄，結果把 `.gitconfig`、`.gitignore` 一起跳過了——正好是這個功能最典型的用途。已抽成 `local/walk.ts` 並補上單元測試。
+- **遷移不算變更**：遷移產生了 commit，但報告仍是 `up-to-date`。已加上 `migrated` 旗標。
+- **升級舊狀態時的邊界**：手動改過的舊狀態檔可能缺欄位，會產生 `undefined` 的 canonical 值。已加上保護。
+- **通知過長**：套用檔案時把完整絕對路徑全列出來，已改為檔名加數量。
 
 ### 與計畫的差異
 - **引擎改為完全不互動**：原計畫在同步流程中詢問使用者，但詢問期間會一直持有跨視窗鎖，使用者不回應時所有視窗都會卡住。現在改成引擎回報 `needs-initial-choice` / `pendingUninstall`，由 controller 在鎖外詢問，再以 `resolvePendingUninstall` 套用。

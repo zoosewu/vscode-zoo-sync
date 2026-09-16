@@ -15,6 +15,8 @@ export function activate(context: vscode.ExtensionContext): void {
     'zooSync.syncNow': () => controller.syncNow(),
     'zooSync.signIn': () => controller.signIn(),
     'zooSync.signOut': () => controller.signOut(),
+    'zooSync.chooseProfiles': () => controller.chooseProfiles(),
+    'zooSync.addFileToSync': () => controller.addFileToSync(),
     'zooSync.showLog': () => controller.showLog(),
     'zooSync.toggleAutoSync': () => controller.toggleAutoSync(),
     'zooSync.resetLocalState': () => controller.resetLocalState(),

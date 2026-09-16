@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { FileLock, type LockResult } from '../../src/sync/lock';
 import { emptyState } from '../../src/sync/ports';
 import { FileStateStore } from '../../src/sync/stateStore';
+import type { Platform } from '../../src/sync/types';
 
 let dir: string;
 
@@ -44,27 +45,101 @@ describe('FileLock', () => {
 });
 
 describe('FileStateStore', () => {
+  const store = (file: string, repository = 'me/sync@main', platform: Platform = 'linux') =>
+    new FileStateStore(file, repository, platform);
+
+  const base = {
+    commitSha: 'c1',
+    resources: {
+      'profiles/Default/settings.json': { canonical: '{"editor.fontSize":14}', blobSha: 'b1' },
+    },
+    meta: {
+      schemaVersion: 2 as const,
+      resources: { 'profiles/Default/settings.json': { updatedAt: '2026-09-16T00:00:00.000Z', updatedBy: 'linux@a' } },
+    },
+  };
+
   it('round-trips state for the same repository', async () => {
-    const store = new FileStateStore(join(dir, 'nested', 'state.json'), 'me/sync@main');
-    const state = { ...emptyState(), localOnlyExtensions: ['a.b'] };
-    await store.write(state);
-    expect(await store.read()).toEqual(state);
+    const file = join(dir, 'nested', 'state.json');
+    const state = {
+      base,
+      extensions: { Default: { localOnly: ['a.b'], pendingUninstall: [], unavailable: [] } },
+      pendingDeletions: [{ remotePath: 'files/common/.gitconfig', localPath: '/home/me/.gitconfig' }],
+      localOnlyFiles: ['files/common/.bashrc'],
+    };
+    await store(file).write(state);
+    expect(await store(file).read()).toEqual(state);
   });
 
   it('ignores state recorded for another repository', async () => {
     const file = join(dir, 'state.json');
-    await new FileStateStore(file, 'me/old@main').write({ ...emptyState(), pendingUninstall: ['x.y'] });
-    expect(await new FileStateStore(file, 'me/new@main').read()).toEqual(emptyState());
+    await store(file, 'me/old@main').write({ ...emptyState(), localOnlyFiles: ['files/common/x'] });
+    expect(await store(file, 'me/new@main').read()).toEqual(emptyState());
   });
 
   it('treats a corrupt file as empty and can clear it', async () => {
     const file = join(dir, 'state.json');
     await writeFile(file, '{not json');
-    const store = new FileStateStore(file, 'me/sync@main');
-    expect(await store.read()).toEqual(emptyState());
-    await store.write(emptyState());
-    expect(JSON.parse(await readFile(file, 'utf8')).repository).toBe('me/sync@main');
-    await store.clear();
-    expect(await store.read()).toEqual(emptyState());
+    expect(await store(file).read()).toEqual(emptyState());
+    await store(file).write(emptyState());
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ version: 2, repository: 'me/sync@main' });
+    await store(file).clear();
+    expect(await store(file).read()).toEqual(emptyState());
+  });
+
+  it('upgrades schema 1 state onto the profile layout instead of starting over', async () => {
+    const file = join(dir, 'state.json');
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        repository: 'me/sync@main',
+        base: {
+          commitSha: 'c9',
+          settings: { 'editor.fontSize': 14 },
+          keybindings: '[{"command":"x","key":"ctrl+k"}]',
+          extensions: ['a.b'],
+          meta: {
+            schemaVersion: 1,
+            resources: {
+              settings: { updatedAt: '2026-09-15T00:00:00.000Z', updatedBy: 'macos@a' },
+              'keybindings.macos': { updatedAt: '2026-09-15T00:00:01.000Z', updatedBy: 'macos@a' },
+              extensions: { updatedAt: '2026-09-15T00:00:02.000Z', updatedBy: 'macos@a' },
+            },
+          },
+        },
+        localOnlyExtensions: ['keep.me'],
+        pendingUninstall: [],
+        unavailableExtensions: ['vendor.private'],
+      }),
+    );
+
+    const state = await store(file, 'me/sync@main', 'macos').read();
+
+    // A base means the upgraded machine is not asked how to start again.
+    expect(state).not.toEqual(emptyState());
+    expect(state.base?.commitSha).toBe('c9');
+    expect(state.base?.resources).toEqual({
+      'profiles/Default/settings.json': { canonical: '{"editor.fontSize":14}', blobSha: '' },
+      'profiles/Default/extensions.json': { canonical: '["a.b"]', blobSha: '' },
+      'profiles/Default/keybindings/macos.json': { canonical: '[{"command":"x","key":"ctrl+k"}]', blobSha: '' },
+    });
+    expect(state.base?.meta).toEqual({
+      schemaVersion: 2,
+      resources: {
+        'profiles/Default/settings.json': { updatedAt: '2026-09-15T00:00:00.000Z', updatedBy: 'macos@a' },
+        'profiles/Default/keybindings/macos.json': { updatedAt: '2026-09-15T00:00:01.000Z', updatedBy: 'macos@a' },
+        'profiles/Default/extensions.json': { updatedAt: '2026-09-15T00:00:02.000Z', updatedBy: 'macos@a' },
+      },
+    });
+    expect(state.extensions).toEqual({
+      Default: { localOnly: ['keep.me'], pendingUninstall: [], unavailable: ['vendor.private'] },
+    });
+  });
+
+  it('keeps a schema 1 file for another repository out of the upgrade', async () => {
+    const file = join(dir, 'state.json');
+    await writeFile(file, JSON.stringify({ version: 1, repository: 'me/old@main', localOnlyExtensions: ['a.b'] }));
+    expect(await store(file, 'me/new@main').read()).toEqual(emptyState());
   });
 });

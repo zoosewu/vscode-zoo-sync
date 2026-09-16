@@ -93,8 +93,12 @@ describe('extension lists', () => {
 });
 
 describe('parseMeta', () => {
-  it('defaults missing data and rejects newer schemas', () => {
-    expect(parseMeta(undefined)).toEqual({ schemaVersion: 1, resources: {} });
-    expect(() => parseMeta('{"schemaVersion": 2, "resources": {}}')).toThrow(/schema version 2/);
+  it('defaults missing data to the current schema and keeps the old one readable', () => {
+    expect(parseMeta(undefined)).toEqual({ schemaVersion: 2, resources: {} });
+    expect(parseMeta('{"schemaVersion": 1, "resources": {}}').schemaVersion).toBe(1);
+  });
+
+  it('rejects a schema written by a newer Zoo Sync', () => {
+    expect(() => parseMeta('{"schemaVersion": 3, "resources": {}}')).toThrow(/schema version 3/);
   });
 });

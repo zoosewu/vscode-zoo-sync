@@ -10,28 +10,25 @@ export interface ResourceMeta {
   updatedBy: string;
 }
 
-/** Content of `meta.json` in the sync repository. Never part of content comparison. */
+/** Content of `meta.json`. Never part of content comparison. */
 export interface RemoteMeta {
-  schemaVersion: 1;
+  /** 1 was the flat, single-profile layout; 2 keys everything by remote path. */
+  schemaVersion: 1 | 2;
+  /** Keyed by remote path in schema 2. */
   resources: Record<string, ResourceMeta>;
 }
 
-/**
- * One side of a merge, reduced to the data that is compared.
- * `undefined` means the document does not exist on that side.
- */
-export interface SyncView {
-  settings?: JsonObject;
-  /** Canonical JSON of the current platform's keybindings. */
-  keybindings?: string;
-  extensions?: string[];
-}
-
-/** Result of the last successful sync on this machine: the common ancestor for three-way merges. */
+/** What the last successful sync left behind: the common ancestor for three-way merges. */
 export interface SyncBase {
   commitSha: string;
-  settings: JsonObject;
-  keybindings: string;
-  extensions: string[];
+  /** Keyed by remote path. */
+  resources: Record<string, BaseResource>;
   meta: RemoteMeta;
+}
+
+export interface BaseResource {
+  /** Normalized content, used for comparison. */
+  canonical: string;
+  /** Git blob id of the remote bytes, so unchanged files are never downloaded again. */
+  blobSha: string;
 }

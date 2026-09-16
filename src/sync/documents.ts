@@ -84,15 +84,18 @@ export function serializeExtensionList(ids: readonly string[]): string {
 }
 
 export function emptyMeta(): RemoteMeta {
-  return { schemaVersion: 1, resources: {} };
+  return { schemaVersion: SCHEMA_VERSION, resources: {} };
 }
+
+export const SCHEMA_VERSION = 2;
 
 export function parseMeta(text: string | undefined): RemoteMeta {
   const value = text === undefined ? undefined : (parseJsonc(text, 'meta.json') as Partial<RemoteMeta> | undefined);
-  if (value?.schemaVersion !== undefined && value.schemaVersion > 1) {
-    throw new Error(`meta.json uses schema version ${value.schemaVersion}; update Zoo Sync to read it`);
+  const schemaVersion = value?.schemaVersion ?? SCHEMA_VERSION;
+  if (schemaVersion > SCHEMA_VERSION) {
+    throw new Error(`meta.json uses schema version ${schemaVersion}; update Zoo Sync to read it`);
   }
-  return { schemaVersion: 1, resources: { ...value?.resources } };
+  return { schemaVersion: schemaVersion === 1 ? 1 : 2, resources: { ...value?.resources } };
 }
 
 export function serializeMeta(meta: RemoteMeta): string {

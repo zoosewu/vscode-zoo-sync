@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
+import type { FileSpec } from './sync/pathSpec';
 
 const SECTION = 'zooSync';
 
 export interface ZooSyncConfig {
   repository: string;
+  profiles: string[];
+  files: FileSpec[];
   branch: string;
   autoSync: boolean;
   remotePollMinutes: number;
@@ -16,6 +19,8 @@ export function readConfig(): ZooSyncConfig {
   const config = vscode.workspace.getConfiguration(SECTION);
   return {
     repository: config.get<string>('repository', '').trim(),
+    profiles: config.get<string[]>('profiles', ['Default']),
+    files: config.get<FileSpec[]>('files', []),
     branch: config.get<string>('branch', 'main').trim() || 'main',
     autoSync: config.get<boolean>('autoSync', true),
     remotePollMinutes: Math.max(5, config.get<number>('remotePollMinutes', 30)),

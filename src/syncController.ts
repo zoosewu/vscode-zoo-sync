@@ -5,9 +5,10 @@ import { affectsConfig, readConfig, updateConfig, type ZooSyncConfig } from './c
 import type { GitHubAuth } from './github/auth';
 import { GitHubApiError, GitHubClient } from './github/client';
 import { GitHubRepoStore, parseRepository } from './github/repoStore';
-import { userDirectory, VSCodeLocalStore } from './local/vscodeLocalStore';
+import { VSCodeLocalStore } from './local/vscodeLocalStore';
 import { errorMessage, SyncEngine, type SyncReport } from './sync/engine';
 import { FileLock } from './sync/lock';
+import { buildResourcePlan } from './sync/resources';
 import type { InitialSyncChoice } from './sync/ports';
 import { FileStateStore } from './sync/stateStore';
 import type { StatusBar } from './ui/statusBar';
@@ -23,6 +24,7 @@ export class SyncController implements vscode.Disposable {
   private readonly statePath: string;
   private readonly disposables: vscode.Disposable[] = [];
   private timers: NodeJS.Timeout[] = [];
+  private watchers: vscode.Disposable[] = [];
   private running = false;
   /** Set by file and extension events; the local timer only syncs when it is set. */
   private dirty = false;
@@ -31,6 +33,10 @@ export class SyncController implements vscode.Disposable {
   private ensuredRepository?: string;
   private lastSync?: Date;
   private promptOpen = false;
+  private readonly notedProfiles = new Set<string>();
+  private readonly markDirty = () => {
+    this.dirty = true;
+  };
   private initialChoiceDismissed = false;
 
   constructor(
@@ -44,20 +50,12 @@ export class SyncController implements vscode.Disposable {
     this.lock = new FileLock(path.join(storage, 'sync.lock'));
     this.statePath = path.join(storage, 'state.json');
 
-    // Event-driven watchers on two files are effectively free; no polling of the file system.
-    const userDir = vscode.Uri.file(userDirectory(context));
-    const markDirty = () => {
-      this.dirty = true;
-    };
-    for (const name of ['settings.json', 'keybindings.json']) {
-      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(userDir, name));
-      this.disposables.push(watcher, watcher.onDidChange(markDirty), watcher.onDidCreate(markDirty), watcher.onDidDelete(markDirty));
-    }
     this.disposables.push(
-      vscode.extensions.onDidChange(markDirty),
+      vscode.extensions.onDidChange(this.markDirty),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (affectsConfig(event)) {
           this.reschedule();
+          void this.refreshWatchers();
         }
       }),
       auth.onDidChangeSessions(() => void this.run('auth')),
@@ -66,11 +64,50 @@ export class SyncController implements vscode.Disposable {
 
   start(): void {
     this.reschedule();
+    void this.refreshWatchers();
     void this.run('startup');
+  }
+
+  /**
+   * One watcher per synced location. These are OS change notifications, not polling, so watching a
+   * handful of files and directories costs effectively nothing.
+   */
+  private async refreshWatchers(): Promise<void> {
+    this.watchers.forEach((watcher) => watcher.dispose());
+    this.watchers = [];
+    const config = readConfig();
+    const plan = buildResourcePlan({ profiles: config.profiles, files: config.files }, this.local.platform);
+    const profiles = await this.local.listProfiles().catch(() => []);
+    const byName = new Map(profiles.map((profile) => [profile.name, profile]));
+    const targets: { dir: string; pattern: string }[] = [];
+    for (const name of plan.profiles) {
+      const profile = byName.get(name);
+      if (profile) {
+        targets.push({ dir: profile.dir, pattern: 'settings.json' }, { dir: profile.dir, pattern: 'keybindings.json' });
+      }
+    }
+    for (const pattern of plan.patterns) {
+      const dir = pattern.scope === 'home' ? this.local.homeDir : byName.get(pattern.profile ?? '')?.dir;
+      if (dir) {
+        targets.push({ dir, pattern: pattern.pattern });
+      }
+    }
+    for (const target of targets) {
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(vscode.Uri.file(target.dir), target.pattern),
+      );
+      this.watchers.push(
+        watcher,
+        watcher.onDidChange(this.markDirty),
+        watcher.onDidCreate(this.markDirty),
+        watcher.onDidDelete(this.markDirty),
+      );
+    }
   }
 
   dispose(): void {
     this.timers.forEach(clearInterval);
+    this.watchers.forEach((watcher) => watcher.dispose());
     this.disposables.forEach((d) => d.dispose());
   }
 
@@ -161,9 +198,66 @@ export class SyncController implements vscode.Disposable {
     if (answer !== 'Reset') {
       return;
     }
-    await new FileStateStore(this.statePath, '').clear();
+    await new FileStateStore(this.statePath, '', this.local.platform).clear();
     this.initialChoiceDismissed = false;
     void vscode.window.showInformationMessage('Zoo Sync state was reset.');
+  }
+
+  /** Lets the user pick which local profiles are synced. */
+  async chooseProfiles(): Promise<void> {
+    const profiles = await this.local.listProfiles();
+    const selected = new Set(readConfig().profiles);
+    const picked = await vscode.window.showQuickPick(
+      profiles.map((profile) => ({ label: profile.name, picked: selected.has(profile.name) })),
+      {
+        canPickMany: true,
+        title: 'Zoo Sync: Profiles to Sync',
+        placeHolder: 'Settings, keybindings, extensions and files are synced per checked profile',
+        ignoreFocusOut: true,
+      },
+    );
+    if (!picked) {
+      return;
+    }
+    await updateConfig('profiles', picked.map((item) => item.label));
+    await this.run('manual');
+  }
+
+  /** Adds the active file, or a path the user types, to zooSync.files. */
+  async addFileToSync(): Promise<void> {
+    const active = vscode.window.activeTextEditor?.document.uri;
+    const suggestion = active && active.scheme === 'file' ? await this.toFileSpec(active.fsPath) : undefined;
+    const value = await vscode.window.showInputBox({
+      title: 'Zoo Sync: Add File to Sync',
+      prompt: 'Path relative to the profile directory (e.g. snippets/**) or under your home directory (e.g. ~/.gitconfig)',
+      value: suggestion,
+      ignoreFocusOut: true,
+    });
+    if (!value) {
+      return;
+    }
+    const files = readConfig().files;
+    if (files.some((file) => file === value)) {
+      return;
+    }
+    await updateConfig('files', [...files, value]);
+    await this.run('manual');
+  }
+
+  /** Expresses an absolute path the way zooSync.files wants it, when it lies somewhere we can sync. */
+  private async toFileSpec(file: string): Promise<string | undefined> {
+    const profiles = await this.local.listProfiles().catch(() => []);
+    for (const profile of profiles) {
+      const relative = path.relative(profile.dir, file);
+      if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+        return relative.split(path.sep).join('/');
+      }
+    }
+    const fromHome = path.relative(this.local.homeDir, file);
+    if (fromHome && !fromHome.startsWith('..') && !path.isAbsolute(fromHome)) {
+      return `~/${fromHome.split(path.sep).join('/')}`;
+    }
+    return undefined;
   }
 
   showLog(): void {
@@ -256,9 +350,14 @@ export class SyncController implements vscode.Disposable {
     return new SyncEngine({
       local: this.local,
       remote: store,
-      state: new FileStateStore(this.statePath, repositoryKey),
+      state: new FileStateStore(this.statePath, repositoryKey, this.local.platform),
       logger: this.log,
-      config: { ignoredSettings: config.ignoredSettings, ignoredExtensions: config.ignoredExtensions },
+      config: {
+        profiles: config.profiles,
+        files: config.files,
+        ignoredSettings: config.ignoredSettings,
+        ignoredExtensions: config.ignoredExtensions,
+      },
       machine: `${this.local.platform}@${hostname()}`,
     });
   }
@@ -290,8 +389,19 @@ export class SyncController implements vscode.Disposable {
     if (manual) {
       void vscode.window.showInformationMessage(summary ? `Zoo Sync: ${summary}.` : 'Zoo Sync: everything is up to date.');
     }
+    for (const problem of report.problems) {
+      this.log.warn(problem);
+    }
+    if (report.missingProfiles.length > 0) {
+      this.log.warn(`Configured profiles missing on this machine: ${report.missingProfiles.join(', ')}.`);
+    }
+    if (report.unconfiguredProfiles.length > 0) {
+      this.noteUnconfiguredProfiles(report.unconfiguredProfiles);
+    }
     if (report.pendingUninstall.length > 0) {
       void this.offerUninstall(report.pendingUninstall, engine);
+    } else if (report.pendingDeletions.length > 0) {
+      void this.offerDeletions(report.pendingDeletions, engine);
     }
   }
 
@@ -360,6 +470,59 @@ export class SyncController implements vscode.Disposable {
     }
   }
 
+  private noteUnconfiguredProfiles(names: string[]): void {
+    const fresh = names.filter((name) => !this.notedProfiles.has(name));
+    if (fresh.length === 0) {
+      return;
+    }
+    fresh.forEach((name) => this.notedProfiles.add(name));
+    void vscode.window
+      .showInformationMessage(
+        `The repository also holds profile(s) ${fresh.join(', ')}. Add them to zooSync.profiles to sync them here.`,
+        'Choose Profiles',
+      )
+      .then((action) => action && this.chooseProfiles());
+  }
+
+  private async offerDeletions(paths: string[], engine: SyncEngine): Promise<void> {
+    if (this.promptOpen) {
+      return;
+    }
+    this.promptOpen = true;
+    try {
+      const message =
+        paths.length === 1
+          ? `${paths[0]} was deleted on another machine.`
+          : `${paths.length} synced files were deleted on another machine.`;
+      const action = await vscode.window.showInformationMessage(message, 'Review…', 'Keep on This Machine');
+      let chosen: string[] | undefined;
+      if (action === 'Keep on This Machine') {
+        chosen = [];
+      } else if (action === 'Review…') {
+        const picked = await vscode.window.showQuickPick(
+          paths.map((path) => ({ label: path, picked: true })),
+          {
+            canPickMany: true,
+            title: 'Zoo Sync: Delete Files Removed Elsewhere',
+            placeHolder: 'Checked files are deleted (a copy is kept); unchecked ones stay here without syncing',
+            ignoreFocusOut: true,
+          },
+        );
+        chosen = picked?.map((item) => item.label);
+      }
+      if (!chosen) {
+        return;
+      }
+      const selection = chosen;
+      const result = await this.lock.run(() => engine.resolvePendingDeletions(selection));
+      if (!result.acquired) {
+        void vscode.window.showWarningMessage('Zoo Sync is busy in another window; you will be asked again later.');
+      }
+    } finally {
+      this.promptOpen = false;
+    }
+  }
+
   private async offerUninstall(ids: string[], engine: SyncEngine): Promise<void> {
     if (this.promptOpen) {
       return;
@@ -390,7 +553,8 @@ export class SyncController implements vscode.Disposable {
         return;
       }
       const selection = chosen;
-      const result = await this.lock.run(() => engine.resolvePendingUninstall(selection));
+      const profile = (await this.local.currentProfile()) ?? 'Default';
+      const result = await this.lock.run(() => engine.resolvePendingUninstall(profile, selection));
       if (!result.acquired) {
         void vscode.window.showWarningMessage('Zoo Sync is busy in another window; you will be asked again later.');
       }
@@ -420,11 +584,17 @@ export class SyncController implements vscode.Disposable {
 
 function describe(report: SyncReport): string {
   const parts: string[] = [];
+  if (report.migrated) {
+    parts.push('moved the repository to the profile layout');
+  }
   if (report.uploaded.length > 0) {
-    parts.push(`uploaded ${report.uploaded.join(', ')}`);
+    parts.push(`uploaded ${summarize(report.uploaded)}`);
+  }
+  if (report.removed.length > 0) {
+    parts.push(`removed ${summarize(report.removed)} from the repository`);
   }
   if (report.applied.length > 0) {
-    parts.push(`applied ${report.applied.join(', ')}`);
+    parts.push(`applied ${summarize(report.applied.map((file) => path.basename(file)))}`);
   }
   if (report.installed.length > 0) {
     parts.push(`installed ${report.installed.length} extension(s)`);
@@ -433,4 +603,10 @@ function describe(report: SyncReport): string {
     parts.push(`resolved ${report.conflicts.length} conflict(s)`);
   }
   return parts.join('; ');
+}
+
+/** Long lists make for unreadable notifications, so only the first few names are shown. */
+function summarize(names: readonly string[]): string {
+  const shown = names.slice(0, 2).join(', ');
+  return names.length > 2 ? `${shown} and ${names.length - 2} more` : shown;
 }

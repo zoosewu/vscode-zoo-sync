@@ -48,6 +48,16 @@
         "category": "Zoo Sync"
       },
       {
+        "command": "zooSync.chooseProfiles",
+        "title": "Choose Profiles to Sync",
+        "category": "Zoo Sync"
+      },
+      {
+        "command": "zooSync.addFileToSync",
+        "title": "Add File to Sync",
+        "category": "Zoo Sync"
+      },
+      {
         "command": "zooSync.showLog",
         "title": "Show Log",
         "category": "Zoo Sync"
@@ -71,6 +81,29 @@
           "default": "",
           "pattern": "^$|^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
           "markdownDescription": "Private GitHub repository used as sync storage, in `owner/name` form. Use **Zoo Sync: Configure Repository** to set or create it.",
+          "scope": "application"
+        },
+        "zooSync.profiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Default"
+          ],
+          "markdownDescription": "Profiles whose settings, keybindings, extensions and files are synced. Use **Zoo Sync: Choose Profiles to Sync** to pick them. A profile in the repository that does not exist here is reported, never created.",
+          "scope": "application"
+        },
+        "zooSync.files": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "object"
+            ]
+          },
+          "default": [],
+          "markdownDescription": "Extra files to sync. A relative path is synced inside every profile (`snippets/**`, `tasks.json`); a path starting with `~/` is synced once per machine (`~/.gitconfig`). Use `{ \"path\": \"~/.config/x.toml\", \"perPlatform\": true }` to keep one copy per platform, and `{ \"path\": { \"windows\": \"…\", \"*\": \"…\" } }` when the path differs per platform. `*` matches within a folder, `**` crosses folders. Files over 1 MB, binaries, and names that look like credentials are skipped.",
           "scope": "application"
         },
         "zooSync.branch": {

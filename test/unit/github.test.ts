@@ -99,6 +99,44 @@ describe('GitHubRepoStore', () => {
     expect(await store.readFile('c1', 'settings.json')).toBeUndefined();
   });
 
+  it('lists a commit tree as paths mapped to blob ids, ignoring directories', async () => {
+    const { store, remaining } = scripted([
+      { method: 'GET', path: '/repos/me/sync/git/commits/c1', response: json(200, { tree: { sha: 't0' } }) },
+      {
+        method: 'GET',
+        path: '/repos/me/sync/git/trees/t0?recursive=1',
+        response: json(200, {
+          truncated: false,
+          tree: [
+            { path: 'meta.json', type: 'blob', sha: 'b1' },
+            { path: 'profiles', type: 'tree', sha: 'd1' },
+            { path: 'profiles/Default/settings.json', type: 'blob', sha: 'b2' },
+          ],
+        }),
+      },
+    ]);
+
+    expect(await store.listTree('c1')).toEqual(
+      new Map([
+        ['meta.json', 'b1'],
+        ['profiles/Default/settings.json', 'b2'],
+      ]),
+    );
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('refuses a truncated tree listing instead of syncing a partial repository', async () => {
+    const { store } = scripted([
+      { method: 'GET', path: '/repos/me/sync/git/commits/c1', response: json(200, { tree: { sha: 't0' } }) },
+      {
+        method: 'GET',
+        path: '/repos/me/sync/git/trees/t0?recursive=1',
+        response: json(200, { truncated: true, tree: [{ path: 'meta.json', type: 'blob', sha: 'b1' }] }),
+      },
+    ]);
+    await expect(store.listTree('c1')).rejects.toThrow(/too many files/);
+  });
+
   it('commits all files atomically and fast-forwards without force', async () => {
     const { store, calls, remaining } = scripted([
       { method: 'GET', path: '/repos/me/sync/git/commits/p1', response: json(200, { tree: { sha: 't0' } }) },
@@ -107,7 +145,7 @@ describe('GitHubRepoStore', () => {
       { method: 'PATCH', path: '/repos/me/sync/git/refs/heads/main', response: json(200, {}) },
     ]);
 
-    expect(await store.commit('p1', { 'settings.json': '{}', 'meta.json': '{}' }, 'sync: settings')).toBe('c2');
+    expect(await store.commit('p1', { 'settings.json': '{}', 'meta.json': '{}' }, [], 'sync: settings')).toBe('c2');
 
     expect(remaining).toHaveLength(0);
     expect(calls[1].body).toEqual({
@@ -121,6 +159,27 @@ describe('GitHubRepoStore', () => {
     expect(calls[3].body).toEqual({ sha: 'c2', force: false });
   });
 
+  it('removes deleted paths in the same commit', async () => {
+    const { store, calls, remaining } = scripted([
+      { method: 'GET', path: '/repos/me/sync/git/commits/p1', response: json(200, { tree: { sha: 't0' } }) },
+      { method: 'POST', path: '/repos/me/sync/git/trees', response: json(201, { sha: 't1' }) },
+      { method: 'POST', path: '/repos/me/sync/git/commits', response: json(201, { sha: 'c2' }) },
+      { method: 'PATCH', path: '/repos/me/sync/git/refs/heads/main', response: json(200, {}) },
+    ]);
+
+    await store.commit('p1', { 'meta.json': '{}' }, ['profiles/Default/files/common/old.json'], 'sync: -old.json');
+
+    expect(remaining).toHaveLength(0);
+    expect(calls[1].body).toEqual({
+      base_tree: 't0',
+      tree: [
+        { path: 'meta.json', mode: '100644', type: 'blob', content: '{}' },
+        // A null sha is how the Git Database API removes a path.
+        { path: 'profiles/Default/files/common/old.json', mode: '100644', type: 'blob', sha: null },
+      ],
+    });
+  });
+
   it('turns a non-fast-forward ref update into NonFastForwardError', async () => {
     const { store } = scripted([
       { method: 'GET', path: '/repos/me/sync/git/commits/p1', response: json(200, { tree: { sha: 't0' } }) },
@@ -132,7 +191,7 @@ describe('GitHubRepoStore', () => {
         response: json(422, { message: 'Update is not a fast forward' }),
       },
     ]);
-    await expect(store.commit('p1', {}, 'm')).rejects.toBeInstanceOf(NonFastForwardError);
+    await expect(store.commit('p1', {}, [], 'm')).rejects.toBeInstanceOf(NonFastForwardError);
   });
 
   it('creates a missing repository as private for the signed-in user', async () => {

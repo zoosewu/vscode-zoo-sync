@@ -98,6 +98,22 @@ export class GitHubRepoStore implements RemoteStore {
     return (await response.text()).trim();
   }
 
+  /** Every file in a commit, mapped to its git blob id, in one request. */
+  async listTree(commitSha: string): Promise<Map<string, string>> {
+    const commit = await this.client.json<{ tree: { sha: string } }>(
+      'GET',
+      `${this.repoPath}/git/commits/${commitSha}`,
+    );
+    const tree = await this.client.json<{
+      truncated: boolean;
+      tree: { path: string; type: string; sha: string }[];
+    }>('GET', `${this.repoPath}/git/trees/${commit.tree.sha}?recursive=1`);
+    if (tree.truncated) {
+      throw new Error('The sync repository has too many files for one listing; remove files you no longer sync.');
+    }
+    return new Map(tree.tree.filter((entry) => entry.type === 'blob').map((entry) => [entry.path, entry.sha]));
+  }
+
   async readFile(commitSha: string, path: string): Promise<string | undefined> {
     const response = await this.client.request('GET', `${this.repoPath}/contents/${encodePath(path)}?ref=${commitSha}`, {
       accept: 'application/vnd.github.raw+json',
@@ -106,12 +122,21 @@ export class GitHubRepoStore implements RemoteStore {
     return response.status === 404 ? undefined : await response.text();
   }
 
-  async commit(parentSha: string, files: Record<string, string>, message: string): Promise<string> {
+  async commit(
+    parentSha: string,
+    files: Record<string, string>,
+    deletions: readonly string[],
+    message: string,
+  ): Promise<string> {
     const parent = await this.client.json<{ tree: { sha: string } }>('GET', `${this.repoPath}/git/commits/${parentSha}`);
     const tree = await this.client.json<{ sha: string }>('POST', `${this.repoPath}/git/trees`, {
       body: {
         base_tree: parent.tree.sha,
-        tree: Object.entries(files).map(([path, content]) => ({ path, mode: '100644', type: 'blob', content })),
+        tree: [
+          ...Object.entries(files).map(([path, content]) => ({ path, mode: '100644', type: 'blob', content })),
+          // A null sha removes the path from the new tree.
+          ...deletions.map((path) => ({ path, mode: '100644', type: 'blob', sha: null })),
+        ],
       },
     });
     const commit = await this.client.json<{ sha: string }>('POST', `${this.repoPath}/git/commits`, {
