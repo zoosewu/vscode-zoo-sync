@@ -38,7 +38,7 @@
 
 ## 9. 驗證
 - [x] check-types / lint / 90 個單元測試通過
-- [ ] integration smoke test（環境缺 libgtk-3，無法啟動 VS Code，見 Review）
+- [x] integration smoke test（本機缺 libgtk-3 無法執行，改由 CI 在三個平台驗證，見第 10 節）
 - [x] 以 stub vscode + 假 GitHub API 對 production bundle 做兩台機器端到端驗證
 - [x] package .vsix（只含 dist/extension.js、package.json、readme）
 - [ ] 以真實 GitHub 帳號手動端到端測試（需使用者執行）
@@ -47,13 +47,14 @@
 - [x] 查證最新版本：checkout v7、setup-node v7、cache v6、pnpm/action-setup v6、release-please-action v5（v5 只把 runtime 改成 node24）
 - [x] `.github/workflows/ci.yml`：Windows / macOS / Linux 矩陣，執行 type check、lint、unit、integration，並在 Linux 上打包
 - [x] `.github/workflows/release-please.yml`：維護 release PR，合併後建立 tag / Release，並上傳 `.vsix`
-- [x] `release-please-config.json`、`.release-please-manifest.json`（`0.0.0`，第一個 `feat` 會發布成 `0.1.0`）
+- [x] `release-please-config.json`、`.release-please-manifest.json`（manifest 設為 `0.0.0`；實際發布時 release-please 的 node 策略把第一次發布視為 **1.0.0**，不是預期的 0.1.0）
 - [x] `package.json` 加入 `packageManager: pnpm@12.4.1`，供 CI 決定 pnpm 版本
 - [x] README：安裝方式與發版流程
 - [x] 本機驗證：actionlint 1.7.12 無問題、JSON 格式正確、frozen lockfile 可安裝、90 個 unit test 通過、vsix 只含 5 個必要檔案
   - 修正：pnpm 12 會把 `packageManagerDependencies` 寫進 lockfile，因此 `pnpm-lock.yaml` 必須一起 commit，否則 CI 的 frozen install 會失敗
   - 修正：`.vscodeignore` 排除 `.github/` 與 release-please 設定檔
-- [ ] push 到 GitHub 後實際跑過一次（需要設定 remote，並開啟 Actions 建立 PR 的權限）
+- [x] push 到 GitHub 後實際驗證：CI 在 Windows / macOS / Linux 三個平台全數通過（本機無法執行的整合測試在此得到驗證）；release-please 開出 PR #1，合併後產生 tag `v1.0.0`、Release 與附件 `zoo-sync-1.0.0.vsix`（22.5 KB）
+- [x] 修正 `changelog-sections`：section 名稱不需自帶 `###`，否則 CHANGELOG 會出現 `### ### Added`（已同步修正既有的 CHANGELOG.md）
 
 ## Review
 
@@ -69,6 +70,6 @@
 - `.vscodeignore` 仍寫舊檔名 `vitest.config.ts`，導致設定檔被打包進 vsix。已修正。
 
 ### 未完成的驗證
-- `pnpm test:integration`：VS Code 1.137 已下載，但容器缺少 `libgtk-3.so.0` 等 Electron 系統函式庫，因此沒有安裝。需要時可執行：
-  `apt-get install -y libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxkbfile1 libsecret-1-0`，再執行 `xvfb-run -a pnpm run test:integration`。
-- 還需要以真實 GitHub 帳號、在 Windows / macOS 上實際測試。
+- `pnpm test:integration` 在這台開發機無法執行（缺少 `libgtk-3.so.0` 等 Electron 系統函式庫）。需要本機執行時：
+  `apt-get install -y libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxkbfile1 libsecret-1-0`，再執行 `xvfb-run -a pnpm run test:integration`。CI 已在 Windows / macOS / Linux 上執行並通過。
+- 還需要以真實 GitHub 帳號實際同步兩台電腦。
