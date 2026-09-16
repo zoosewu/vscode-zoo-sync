@@ -10,6 +10,13 @@
 - **不會誤判變更**：比對前會把內容正規化（排序 key、去掉註解與格式），`meta.json` 裡的 update time 也不參與比對。內容沒變就不會產生 commit。
 - **衝突處理**：兩邊改到同一個 key（或同一平台的 keybindings）時，保留 update time 較新的一方，並寫進 log。舊的值仍可在 git 歷史中找回。
 
+## 安裝
+
+Zoo Sync 不會發布到 VS Code Marketplace。請從 GitHub Releases 下載 `zoo-sync-<version>.vsix`，再用以下任一方式安裝：
+
+- 在 Extensions 檢視的 `…` 選單選擇 **Install from VSIX…**
+- 或在終端機執行：`code --install-extension zoo-sync-<version>.vsix`
+
 ## 使用方式
 
 1. 執行指令 **Zoo Sync: Configure Repository**，用 VS Code 內建的 GitHub 帳號登入（需要 `repo` scope）。
@@ -97,6 +104,18 @@ pnpm run package        # 產出 .vsix
 ```
 
 在 VS Code 中按 F5 可以開啟 Extension Development Host。
+
+### 發版流程
+
+版本由 [release-please](https://github.com/googleapis/release-please) 依照 [Conventional Commits](https://www.conventionalcommits.org/) 自動決定：
+
+1. commit 訊息使用 `feat:`、`fix:` 等前綴，push 到 `main`。
+2. `Release Please` workflow 會建立或更新 `chore: release x.y.z` PR，內容包含 `CHANGELOG.md` 與 `package.json` 版本號。
+3. 合併這個 PR 後，會建立 `vx.y.z` tag 與 GitHub Release，並把打包好的 `.vsix` 上傳到該 Release。
+
+第一次使用前，請在 repository 的 **Settings → Actions → General** 開啟 **Allow GitHub Actions to create and approve pull requests**。
+
+由 `GITHUB_TOKEN` 建立的 release PR 不會觸發 CI。需要在該 PR 上跑檢查時，請手動重新觸發，或改用 Personal Access Token。
 
 架構：
 

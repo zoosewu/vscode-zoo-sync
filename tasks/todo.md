@@ -43,6 +43,18 @@
 - [x] package .vsix（只含 dist/extension.js、package.json、readme）
 - [ ] 以真實 GitHub 帳號手動端到端測試（需使用者執行）
 
+## 10. GitHub Actions 自動 release（參考 zoosewu/vscode-project-manager，不發布 Marketplace）
+- [x] 查證最新版本：checkout v7、setup-node v7、cache v6、pnpm/action-setup v6、release-please-action v5（v5 只把 runtime 改成 node24）
+- [x] `.github/workflows/ci.yml`：Windows / macOS / Linux 矩陣，執行 type check、lint、unit、integration，並在 Linux 上打包
+- [x] `.github/workflows/release-please.yml`：維護 release PR，合併後建立 tag / Release，並上傳 `.vsix`
+- [x] `release-please-config.json`、`.release-please-manifest.json`（`0.0.0`，第一個 `feat` 會發布成 `0.1.0`）
+- [x] `package.json` 加入 `packageManager: pnpm@12.4.1`，供 CI 決定 pnpm 版本
+- [x] README：安裝方式與發版流程
+- [x] 本機驗證：actionlint 1.7.12 無問題、JSON 格式正確、frozen lockfile 可安裝、90 個 unit test 通過、vsix 只含 5 個必要檔案
+  - 修正：pnpm 12 會把 `packageManagerDependencies` 寫進 lockfile，因此 `pnpm-lock.yaml` 必須一起 commit，否則 CI 的 frozen install 會失敗
+  - 修正：`.vscodeignore` 排除 `.github/` 與 release-please 設定檔
+- [ ] push 到 GitHub 後實際跑過一次（需要設定 remote，並開啟 Actions 建立 PR 的權限）
+
 ## Review
 
 ### 與計畫的差異

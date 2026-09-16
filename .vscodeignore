@@ -1,5 +1,8 @@
+.github/**
 .vscode/**
 .vscode-test/**
+release-please-config.json
+.release-please-manifest.json
 src/**
 test/**
 out/**
