@@ -38,7 +38,7 @@
 
 ## 9. 驗證
 - [x] check-types / lint / 90 個單元測試通過
-- [x] integration smoke test（本機缺 libgtk-3 無法執行，改由 CI 在三個平台驗證，見第 10 節）
+- [x] integration smoke test（CI 三平台通過；本機安裝 Electron 執行期函式庫後也可執行，指令見 README）
 - [x] 以 stub vscode + 假 GitHub API 對 production bundle 做兩台機器端到端驗證
 - [x] package .vsix（只含 dist/extension.js、package.json、readme）
 - [ ] 以真實 GitHub 帳號手動端到端測試（需使用者執行）
@@ -86,6 +86,4 @@
 - `.vscodeignore` 仍寫舊檔名 `vitest.config.ts`，導致設定檔被打包進 vsix。已修正。
 
 ### 未完成的驗證
-- `pnpm test:integration` 在這台開發機無法執行（缺少 `libgtk-3.so.0` 等 Electron 系統函式庫）。需要本機執行時：
-  `apt-get install -y libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxkbfile1 libsecret-1-0`，再執行 `xvfb-run -a pnpm run test:integration`。CI 已在 Windows / macOS / Linux 上執行並通過。
-- 還需要以真實 GitHub 帳號實際同步兩台電腦。
+- 還需要以真實 GitHub 帳號實際同步兩台電腦（含 profile 與自訂檔案）。

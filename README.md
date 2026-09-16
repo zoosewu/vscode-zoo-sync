@@ -139,11 +139,21 @@ pnpm install
 pnpm run check-types    # 型別檢查（src + 測試）
 pnpm run lint
 pnpm test               # vitest 單元測試
-pnpm run test:integration   # 在 VS Code 內跑 smoke test（Linux 無桌面環境時用 xvfb-run -a）
+pnpm run test:integration   # 在 VS Code 內跑 smoke test
 pnpm run package        # 產出 .vsix
 ```
 
 在 VS Code 中按 F5 可以開啟 Extension Development Host。
+
+無桌面環境的 Linux（容器、WSL）跑整合測試時，需要先安裝 Electron 的執行期函式庫，並透過 xvfb 執行：
+
+```bash
+sudo apt-get install -y libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxkbfile1 \
+  libsecret-1-0 libatk-bridge2.0-0t64 libcups2t64 libxdamage1 libxrandr2 libxcomposite1 libxfixes3
+xvfb-run -a pnpm run test:integration
+```
+
+缺少這些函式庫時，錯誤訊息會是 `code: error while loading shared libraries: libgtk-3.so.0`。
 
 ### 發版流程
 
