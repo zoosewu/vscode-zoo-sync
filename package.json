@@ -2,7 +2,7 @@
   "name": "zoo-sync",
   "displayName": "Zoo Sync",
   "description": "Sync VS Code settings, keybindings and extensions across Windows, macOS and Linux through a private GitHub repository.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "zoosewu",
   "private": true,
   "packageManager": "pnpm@12.4.1",
