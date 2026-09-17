@@ -12,9 +12,11 @@ import {
   SCHEMA_VERSION,
   serializeExtensionList,
   serializeMeta,
+  serializeSettings,
 } from './documents';
+import { createSettingClassifier, type SettingScope } from './apps';
 import { gitBlobSha } from './hash';
-import { mapLegacyMetaKey, mapLegacyPath } from './legacy';
+import { mapLegacyMetaKey, mapLegacyPath, mapSchema2Path } from './legacy';
 import { createExtensionFilter, createSettingFilter, looksLikeSecret } from './ignore';
 import { mergeExtensions, mergeSettings, mergeValue, type ConflictWinner } from './merge';
 import { isSensitiveFileName, type FileSpec } from './pathSpec';
@@ -40,6 +42,10 @@ const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const DEFAULT_MAX_FILES_PER_PATTERN = 200;
 
 export interface EngineConfig {
+  /** Identifies this editor; see `src/sync/apps.ts`. */
+  appId: string;
+  /** Setting keys owned by one editor, keyed by app id. */
+  appSettings: Readonly<Record<string, readonly string[]>>;
   profiles: readonly string[];
   files: readonly FileSpec[];
   ignoredSettings: readonly string[];
@@ -94,8 +100,10 @@ interface SyncResource {
   remotePath: string;
   kind: ResourceKind;
   profile?: LocalProfileInfo;
-  /** Absent for extensions, which come from VS Code's own manifests. */
+  /** Absent for extensions, which come from the editor's own manifests. */
   localPath?: string;
+  /** Settings only: the shared file, or this app's own keys. */
+  bucket?: 'shared' | 'app';
 }
 
 /** What one resource contributes to the sync, after merging. */
@@ -105,6 +113,8 @@ interface ResourceOutcome {
   uploadText?: string;
   removeRemote?: boolean;
   applyText?: string;
+  /** Settings changes, applied together with the other bucket writing the same file. */
+  applySettings?: { from: JsonObject; to: JsonObject };
   deleteLocal?: boolean;
   conflict?: boolean;
   localMtime?: number;
@@ -216,7 +226,10 @@ export class SyncEngine {
       tree = new Map(Object.entries(state.base.resources).map(([path, entry]) => [path, entry.blobSha]));
     }
 
-    const plan = buildResourcePlan({ profiles: config.profiles, files: config.files }, local.platform);
+    const plan = buildResourcePlan(
+      { profiles: config.profiles, files: config.files, appId: config.appId },
+      local.platform,
+    );
     const problems = [...plan.problems];
     for (const problem of plan.problems) {
       logger.warn(problem);
@@ -262,6 +275,7 @@ export class SyncEngine {
 
     const isIgnoredSetting = createSettingFilter(config.ignoredSettings);
     const isIgnoredExtension = createExtensionFilter(config.ignoredExtensions);
+    const classify = createSettingClassifier(config.appSettings, config.appId);
     const pendingPaths = new Set(state.pendingDeletions.map((pending) => pending.remotePath));
     const keptPaths = new Set(state.localOnlyFiles);
     const currentProfile = await local.currentProfile();
@@ -308,6 +322,7 @@ export class SyncEngine {
         mirrorsRemote: pendingPaths.has(resource.remotePath) || keptPaths.has(resource.remotePath),
         isIgnoredSetting,
         isIgnoredExtension,
+        classify,
         currentProfile,
         extensionState: nextExtensionState,
         installed,
@@ -357,13 +372,28 @@ export class SyncEngine {
 
     // Apply locally.
     const applied: string[] = [];
+    const settingsEdits = new Map<string, { from: JsonObject; to: JsonObject }[]>();
     for (const resource of resources) {
       const outcome = outcomes.get(resource.remotePath);
-      if (!outcome || outcome.applyText === undefined || !resource.localPath) {
+      if (!outcome || !resource.localPath) {
         continue;
       }
-      await local.writeFile(resource.localPath, outcome.applyText);
-      applied.push(resource.localPath);
+      if (outcome.applySettings) {
+        settingsEdits.set(resource.localPath, [...(settingsEdits.get(resource.localPath) ?? []), outcome.applySettings]);
+      } else if (outcome.applyText !== undefined) {
+        await local.writeFile(resource.localPath, outcome.applyText);
+        applied.push(resource.localPath);
+      }
+    }
+    // The shared and app-specific settings write the same file, so they are applied in one pass.
+    for (const [localPath, edits] of settingsEdits) {
+      const current = await local.readFile(localPath);
+      let text = current?.text ?? '';
+      for (const edit of edits) {
+        text = applySettingsChanges(text, edit.from, edit.to);
+      }
+      await local.writeFile(localPath, text);
+      applied.push(localPath);
     }
     if (applied.length > 0) {
       logger.info(`Applied ${applied.length} file(s) from the repository.`);
@@ -429,6 +459,7 @@ export class SyncEngine {
         kind: builtin.kind,
         profile,
         localPath: builtin.relativePath ? join(profile.dir, builtin.relativePath) : undefined,
+        bucket: builtin.bucket,
       });
     }
 
@@ -480,11 +511,18 @@ export class SyncEngine {
     const file = resource.localPath ? await this.deps.local.readFile(resource.localPath) : undefined;
     const label = resource.localPath ?? resource.remotePath;
     const allLocal = parseSettings(file?.text, label);
-    const secrets = Object.keys(allLocal).filter(looksLikeSecret);
-    if (secrets.length > 0) {
-      this.deps.logger.info(`Not syncing secret-like settings in ${label}: ${secrets.join(', ')}`);
+    const isAppBucket = resource.bucket === 'app';
+    const wanted: SettingScope = isAppBucket ? 'mine' : 'shared';
+    const belongsHere = (key: string) => !context.isIgnoredSetting(key) && context.classify(key) === wanted;
+
+    if (!isAppBucket) {
+      const secrets = Object.keys(allLocal).filter(looksLikeSecret);
+      if (secrets.length > 0) {
+        this.deps.logger.info(`Not syncing secret-like settings in ${label}: ${secrets.join(', ')}`);
+      }
     }
-    const localObject = omitKeys(allLocal, context.isIgnoredSetting);
+
+    const localObject = omitKeys(allLocal, (key) => !belongsHere(key));
     const localCanonical = canonicalize(localObject);
     const remoteObject =
       context.remoteCanonical === undefined ? undefined : (JSON.parse(context.remoteCanonical) as JsonObject);
@@ -503,11 +541,18 @@ export class SyncEngine {
       localMtime: file?.mtime,
     };
     if (mergedCanonical !== localCanonical) {
-      outcome.applyText = applySettingsChanges(file?.text ?? '', localObject, merged);
+      outcome.applySettings = { from: localObject, to: merged };
     }
     if (mergedCanonical !== (context.remoteCanonical ?? canonicalize({}))) {
-      const ignoredKeys = Object.keys(allLocal).filter(context.isIgnoredSetting);
-      outcome.uploadText = removeSettings(outcome.applyText ?? file?.text ?? '{}', ignoredKeys);
+      if (isAppBucket) {
+        // Generated file: only this app's keys, so there are no comments to preserve.
+        outcome.uploadText = serializeSettings(merged);
+      } else {
+        const text = outcome.applySettings
+          ? applySettingsChanges(file?.text ?? '', localObject, merged)
+          : (file?.text ?? '{}');
+        outcome.uploadText = removeSettings(text, Object.keys(allLocal).filter((key) => !belongsHere(key)));
+      }
       outcome.blobSha = gitBlobSha(outcome.uploadText);
     }
     return outcome;
@@ -611,50 +656,87 @@ export class SyncEngine {
     return outcome;
   }
 
-  /** Moves a schema 1 repository (flat, Default profile only) to the schema 2 layout in one commit. */
+  /** Brings an older repository up to the current layout, one commit per step. */
   private async migrate(head: string, tree: Map<string, string>): Promise<{ head: string; tree: Map<string, string> }> {
-    const { remote, logger } = this.deps;
     if (!tree.has(META_PATH)) {
       return { head, tree };
     }
-    const meta = parseMeta(await remote.readFile(head, META_PATH));
-    if (meta.schemaVersion !== 1) {
-      return { head, tree };
+    let meta = parseMeta(await this.deps.remote.readFile(head, META_PATH));
+    let current = { head, tree };
+    if (meta.schemaVersion === 1) {
+      const result = await this.rewriteLayout(
+        current,
+        meta,
+        mapLegacyPath,
+        mapLegacyMetaKey,
+        'drop',
+        2,
+        'move Zoo Sync data into the profile layout',
+      );
+      current = { head: result.head, tree: result.tree };
+      meta = result.meta;
+      this.deps.logger.info('Moved the repository to the profile layout (schema 2).');
     }
+    if (meta.schemaVersion === 2) {
+      const mapPath = (path: string) => mapSchema2Path(path, this.deps.config.appId);
+      const result = await this.rewriteLayout(
+        current,
+        meta,
+        mapPath,
+        mapPath,
+        'keep',
+        SCHEMA_VERSION,
+        'keep one extension list per editor',
+      );
+      current = { head: result.head, tree: result.tree };
+      this.deps.logger.info('Gave each editor its own extension list (schema 3).');
+    }
+    return current;
+  }
+
+  /** Renames files and meta entries in one commit, leaving their content untouched. */
+  private async rewriteLayout(
+    current: { head: string; tree: Map<string, string> },
+    meta: RemoteMeta,
+    mapPath: (path: string) => string | undefined,
+    mapMetaKey: (key: string) => string | undefined,
+    unmappedMetaKeys: 'keep' | 'drop',
+    // Each step records the version it produced, so the next step still knows there is work to do.
+    version: RemoteMeta['schemaVersion'],
+    summary: string,
+  ): Promise<{ head: string; tree: Map<string, string>; meta: RemoteMeta }> {
+    const { remote } = this.deps;
     const files: Record<string, string> = {};
     const deletions: string[] = [];
-    const next = new Map(tree);
-    for (const path of tree.keys()) {
-      const mapped = mapLegacyPath(path);
+    const tree = new Map(current.tree);
+    for (const path of current.tree.keys()) {
+      const mapped = mapPath(path);
       if (!mapped) {
         continue;
       }
-      const text = await remote.readFile(head, path);
+      const text = await remote.readFile(current.head, path);
       if (text === undefined) {
         continue;
       }
       files[mapped] = text;
       deletions.push(path);
-      next.delete(path);
-      next.set(mapped, gitBlobSha(text));
+      tree.delete(path);
+      tree.set(mapped, gitBlobSha(text));
     }
     const resources: RemoteMeta['resources'] = {};
     for (const [key, value] of Object.entries(meta.resources)) {
-      const mapped = mapLegacyMetaKey(key);
+      const mapped = mapMetaKey(key);
       if (mapped) {
         resources[mapped] = value;
+      } else if (unmappedMetaKeys === 'keep') {
+        resources[key] = value;
       }
     }
-    files[META_PATH] = serializeMeta({ schemaVersion: SCHEMA_VERSION, resources });
-    next.set(META_PATH, gitBlobSha(files[META_PATH]));
-    const migratedHead = await remote.commit(
-      head,
-      files,
-      deletions,
-      'chore: move Zoo Sync data into the profile layout',
-    );
-    logger.info('Moved the repository to the profile layout (schema 2).');
-    return { head: migratedHead, tree: next };
+    const migrated: RemoteMeta = { schemaVersion: version, resources };
+    files[META_PATH] = serializeMeta(migrated);
+    tree.set(META_PATH, gitBlobSha(files[META_PATH]));
+    const head = await remote.commit(current.head, files, deletions, `chore: ${summary}`);
+    return { head, tree, meta: migrated };
   }
 
   private baseFor(context: ProcessContext, localCanonical: string | undefined): string | undefined {
@@ -732,6 +814,7 @@ interface ProcessContext {
   mirrorsRemote: boolean;
   isIgnoredSetting: (key: string) => boolean;
   isIgnoredExtension: (id: string) => boolean;
+  classify: (key: string) => SettingScope;
   currentProfile?: string;
   extensionState: Record<string, ExtensionState>;
   installed: string[];

@@ -3,20 +3,33 @@ import { buildResourcePlan, relativeFromRemote, remotePathFor } from '../../src/
 
 describe('buildResourcePlan', () => {
   it('creates the built-in resources for every profile', () => {
-    const plan = buildResourcePlan({ profiles: ['Default', 'Work'], files: [] }, 'linux');
+    const plan = buildResourcePlan({ profiles: ['Default', 'Work'], files: [], appId: 'code' }, 'linux');
     expect(plan.builtins.map((b) => b.remotePath)).toEqual([
       'profiles/Default/settings.json',
+      'profiles/Default/settings.code.json',
       'profiles/Default/keybindings/linux.json',
-      'profiles/Default/extensions.json',
+      'profiles/Default/extensions.code.json',
       'profiles/Work/settings.json',
+      'profiles/Work/settings.code.json',
       'profiles/Work/keybindings/linux.json',
-      'profiles/Work/extensions.json',
+      'profiles/Work/extensions.code.json',
     ]);
+  });
+
+  it('shares settings and keybindings between editors but not extensions', () => {
+    const cursor = buildResourcePlan({ profiles: ['Default'], files: [], appId: 'cursor' }, 'linux');
+    expect(cursor.builtins.map((b) => b.remotePath)).toEqual([
+      'profiles/Default/settings.json',
+      'profiles/Default/settings.cursor.json',
+      'profiles/Default/keybindings/linux.json',
+      'profiles/Default/extensions.cursor.json',
+    ]);
+    expect(cursor.builtins.filter((b) => b.kind === 'settings').map((b) => b.bucket)).toEqual(['shared', 'app']);
   });
 
   it('expands profile-scoped files per profile and home files once', () => {
     const plan = buildResourcePlan(
-      { profiles: ['Default', 'Work'], files: ['snippets/**', '~/.gitconfig'] },
+      { profiles: ['Default', 'Work'], files: ['snippets/**', '~/.gitconfig'], appId: 'code' },
       'macos',
     );
     expect(plan.patterns.map((p) => p.remotePrefix)).toEqual([
@@ -28,25 +41,29 @@ describe('buildResourcePlan', () => {
 
   it('puts per-platform files in their own directory', () => {
     const plan = buildResourcePlan(
-      { profiles: ['Default'], files: [{ path: '~/.config/x.toml', perPlatform: true }] },
+      { profiles: ['Default'], files: [{ path: '~/.config/x.toml', perPlatform: true }], appId: 'code' },
       'windows',
     );
     expect(plan.patterns[0].remotePrefix).toBe('files/windows');
   });
 
   it('reports bad entries instead of throwing', () => {
-    const plan = buildResourcePlan({ profiles: ['Default', 'a/b', ' '], files: ['/etc/hosts', 'ok.json'] }, 'linux');
+    const plan = buildResourcePlan(
+      { profiles: ['Default', 'a/b', ' '], files: ['/etc/hosts', 'ok.json'], appId: 'code' },
+      'linux',
+    );
     expect(plan.profiles).toEqual(['Default']);
     expect(plan.problems).toHaveLength(3);
     expect(plan.patterns).toHaveLength(1);
   });
 
   it('falls back to the Default profile when none are configured', () => {
-    expect(buildResourcePlan({ profiles: [], files: [] }, 'linux').profiles).toEqual(['Default']);
+    expect(buildResourcePlan({ profiles: [], files: [], appId: 'code' }, 'linux').profiles).toEqual(['Default']);
   });
 
   it('maps between relative and remote paths', () => {
-    const [pattern] = buildResourcePlan({ profiles: ['Default'], files: ['snippets/**'] }, 'linux').patterns;
+    const [pattern] = buildResourcePlan({ profiles: ['Default'], files: ['snippets/**'], appId: 'code' }, 'linux')
+      .patterns;
     expect(remotePathFor(pattern, 'snippets/py.json')).toBe('profiles/Default/files/common/snippets/py.json');
     expect(relativeFromRemote(pattern, 'profiles/Default/files/common/snippets/py.json')).toBe('snippets/py.json');
     expect(relativeFromRemote(pattern, 'files/common/snippets/py.json')).toBeUndefined();

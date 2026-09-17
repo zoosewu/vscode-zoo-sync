@@ -45,8 +45,8 @@ describe('FileLock', () => {
 });
 
 describe('FileStateStore', () => {
-  const store = (file: string, repository = 'me/sync@main', platform: Platform = 'linux') =>
-    new FileStateStore(file, repository, platform);
+  const store = (file: string, repository = 'me/sync@main', platform: Platform = 'linux', appId = 'code') =>
+    new FileStateStore(file, repository, platform, appId);
 
   const base = {
     commitSha: 'c1',
@@ -54,7 +54,7 @@ describe('FileStateStore', () => {
       'profiles/Default/settings.json': { canonical: '{"editor.fontSize":14}', blobSha: 'b1' },
     },
     meta: {
-      schemaVersion: 2 as const,
+      schemaVersion: 3 as const,
       resources: { 'profiles/Default/settings.json': { updatedAt: '2026-09-16T00:00:00.000Z', updatedBy: 'linux@a' } },
     },
   };
@@ -82,7 +82,7 @@ describe('FileStateStore', () => {
     await writeFile(file, '{not json');
     expect(await store(file).read()).toEqual(emptyState());
     await store(file).write(emptyState());
-    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ version: 2, repository: 'me/sync@main' });
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ version: 3, repository: 'me/sync@main' });
     await store(file).clear();
     expect(await store(file).read()).toEqual(emptyState());
   });
@@ -121,20 +121,51 @@ describe('FileStateStore', () => {
     expect(state.base?.commitSha).toBe('c9');
     expect(state.base?.resources).toEqual({
       'profiles/Default/settings.json': { canonical: '{"editor.fontSize":14}', blobSha: '' },
-      'profiles/Default/extensions.json': { canonical: '["a.b"]', blobSha: '' },
+      'profiles/Default/extensions.code.json': { canonical: '["a.b"]', blobSha: '' },
       'profiles/Default/keybindings/macos.json': { canonical: '[{"command":"x","key":"ctrl+k"}]', blobSha: '' },
     });
     expect(state.base?.meta).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       resources: {
         'profiles/Default/settings.json': { updatedAt: '2026-09-15T00:00:00.000Z', updatedBy: 'macos@a' },
         'profiles/Default/keybindings/macos.json': { updatedAt: '2026-09-15T00:00:01.000Z', updatedBy: 'macos@a' },
-        'profiles/Default/extensions.json': { updatedAt: '2026-09-15T00:00:02.000Z', updatedBy: 'macos@a' },
+        'profiles/Default/extensions.code.json': { updatedAt: '2026-09-15T00:00:02.000Z', updatedBy: 'macos@a' },
       },
     });
     expect(state.extensions).toEqual({
       Default: { localOnly: ['keep.me'], pendingUninstall: [], unavailable: ['vendor.private'] },
     });
+  });
+
+  it('renames schema 2 state so each editor keeps its own extension list', async () => {
+    const file = join(dir, 'state.json');
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 2,
+        repository: 'me/sync@main',
+        base: {
+          commitSha: 'c2',
+          resources: {
+            'profiles/Default/settings.json': { canonical: '{}', blobSha: 'b1' },
+            'profiles/Default/extensions.json': { canonical: '["a.b"]', blobSha: 'b2' },
+          },
+          meta: { schemaVersion: 2, resources: { 'profiles/Default/extensions.json': { updatedAt: 'x', updatedBy: 'y' } } },
+        },
+        extensions: {},
+        pendingDeletions: [],
+        localOnlyFiles: [],
+      }),
+    );
+
+    const state = await store(file, 'me/sync@main', 'linux', 'cursor').read();
+
+    expect(Object.keys(state.base?.resources ?? {})).toEqual([
+      'profiles/Default/settings.json',
+      'profiles/Default/extensions.cursor.json',
+    ]);
+    expect(state.base?.meta.resources['profiles/Default/extensions.cursor.json']).toBeDefined();
+    expect(state.base?.meta.schemaVersion).toBe(3);
   });
 
   it('keeps a schema 1 file for another repository out of the upgrade', async () => {

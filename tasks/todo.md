@@ -66,6 +66,16 @@
 - [x] 測試：151 個單元測試通過；端到端 smoke test 涵蓋遷移、雙 profile、自訂檔案、刪除流程
 - [ ] 以真實 GitHub 帳號在兩台電腦上驗證 profile 與自訂檔案
 
+## 12. v3：支援 Cursor（與 VS Code 共用 profile）
+- [x] 查證：Cursor 基底為 VS Code 1.105（>= 我們的 ^1.101.0）、有 Profiles、目錄結構相同、改用 Open VSX 且同名 id 可能是不同程式碼
+- [x] 與使用者確認：共用 settings/keybindings/檔案、擴充套件分開、專屬設定分檔、profile 同名配對、engines 不動
+- [x] `sync/apps.ts`：`detectAppId`（uriScheme → code/cursor/vscodium）與設定三分類（mine/shared/foreign）
+- [x] 資源改為「共用 vs 該編輯器擁有」：`settings.<app>.json`、`extensions.<app>.json`
+- [x] 兩個 settings 桶寫入同一個本機檔案時合併為單次寫入（否則後者會蓋掉前者）
+- [x] schema 2→3 遷移（遠端與本機狀態），遷移鏈 1→2→3 可連續執行
+- [x] 測試：165 個單元測試通過；端到端 smoke 驗證三台機器（VS Code ×2 + Cursor）共用設定、擴充套件分開、遷移正確
+- [ ] 實機驗證：在同一台電腦上用 VS Code 與 Cursor 各同步一次
+
 ## Review
 
 ### v2 驗證中發現並修正的問題

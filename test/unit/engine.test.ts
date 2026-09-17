@@ -176,11 +176,18 @@ interface MachineOptions {
   platform?: Platform;
   profiles?: string[];
   files?: FileSpec[];
+  /** Which editor this window belongs to; forks keep their own extension list. */
+  appId?: string;
+  /** The profile directory, so a second editor on the same machine can be simulated. */
+  dir?: string;
 }
 
 function machine(remote: FakeRemote, name: string, options: MachineOptions = {}) {
   const platform = options.platform ?? 'linux';
   const local = new FakeLocal(platform);
+  if (options.dir) {
+    local.profiles = [{ name: 'Default', dir: options.dir, isDefault: true }];
+  }
   const state = new MemoryState();
   const warnings: string[] = [];
   const engine = new SyncEngine({
@@ -189,6 +196,8 @@ function machine(remote: FakeRemote, name: string, options: MachineOptions = {})
     state,
     logger: { info: () => undefined, warn: (message) => warnings.push(message), error: () => undefined },
     config: {
+      appId: options.appId ?? 'code',
+      appSettings: { cursor: ['cursor.*'] },
       profiles: options.profiles ?? ['Default'],
       files: options.files ?? [],
       ignoredSettings: ['git.path', '*Path'],
@@ -230,15 +239,16 @@ describe('SyncEngine', () => {
 
     expect(report.outcome).toBe('synced');
     expect(report.uploaded.sort()).toEqual([
-      'profiles/Default/extensions.json',
+      'profiles/Default/extensions.code.json',
       'profiles/Default/keybindings/linux.json',
       'profiles/Default/settings.json',
     ]);
+    expect(Object.keys(remote.files)).not.toContain('profiles/Default/settings.code.json');
     expect(remote.files['profiles/Default/settings.json']).toContain('// font');
     expect(parseSettings(remote.files['profiles/Default/settings.json'])).toEqual({ 'editor.fontSize': 14 });
-    expect(JSON.parse(remote.files['profiles/Default/extensions.json'])).toEqual(['esbenp.prettier-vscode']);
+    expect(JSON.parse(remote.files['profiles/Default/extensions.code.json'])).toEqual(['esbenp.prettier-vscode']);
     const meta = parseMeta(remote.files['meta.json']);
-    expect(meta.schemaVersion).toBe(2);
+    expect(meta.schemaVersion).toBe(3);
     expect(meta.resources['profiles/Default/settings.json'].updatedBy).toBe('linux@a');
   });
 
@@ -272,7 +282,7 @@ describe('SyncEngine', () => {
     await a.sync({ localChanged: false });
 
     expect(remote.readCalls).toContain('profiles/Default/settings.json');
-    expect(remote.readCalls).not.toContain('profiles/Default/extensions.json');
+    expect(remote.readCalls).not.toContain('profiles/Default/extensions.code.json');
   });
 
   it('asks how to start on a new machine and downloads without touching ignored keys', async () => {
@@ -419,7 +429,7 @@ describe('SyncEngine', () => {
 
     expect(parseSettings(remote.files['profiles/Default/settings.json'])).toEqual({ 'editor.fontSize': 14 });
     expect(parseSettings(remote.files['profiles/Work/settings.json'])).toEqual({ 'editor.fontSize': 20 });
-    expect(JSON.parse(remote.files['profiles/Work/extensions.json'])).toEqual(['work.ext']);
+    expect(JSON.parse(remote.files['profiles/Work/extensions.code.json'])).toEqual(['work.ext']);
   });
 
   it('reports profiles that are configured but missing, and ones only in the repository', async () => {
@@ -449,7 +459,7 @@ describe('SyncEngine', () => {
     const report = await b.sync({ initialChoice: 'download' });
 
     expect(report.installed).toEqual([]);
-    expect(JSON.parse(remote.files['profiles/Default/extensions.json'])).toEqual(['a.one']);
+    expect(JSON.parse(remote.files['profiles/Default/extensions.code.json'])).toEqual(['a.one']);
   });
 
   it('offers to uninstall extensions removed elsewhere and remembers the ones kept', async () => {
@@ -466,7 +476,7 @@ describe('SyncEngine', () => {
 
     const after = await b.sync();
     expect(after).toMatchObject({ uploaded: [], pendingUninstall: [] });
-    expect(JSON.parse(remote.files['profiles/Default/extensions.json'])).toEqual([]);
+    expect(JSON.parse(remote.files['profiles/Default/extensions.code.json'])).toEqual([]);
   });
 
   it('keeps extensions in the repository when they cannot be installed here', async () => {
@@ -481,14 +491,17 @@ describe('SyncEngine', () => {
     await b.sync();
 
     expect(b.warnings.some((warning) => warning.includes('Could not install extension vendor.private'))).toBe(true);
-    expect(JSON.parse(remote.files['profiles/Default/extensions.json'])).toEqual(['vendor.private']);
+    expect(JSON.parse(remote.files['profiles/Default/extensions.code.json'])).toEqual(['vendor.private']);
   });
 
   it('moves a schema 1 repository into the profile layout', async () => {
     const remote = new FakeRemote({
       'meta.json': JSON.stringify({
         schemaVersion: 1,
-        resources: { settings: { updatedAt: '2026-09-15T00:00:00.000Z', updatedBy: 'linux@old' } },
+        resources: {
+          settings: { updatedAt: '2026-09-15T00:00:00.000Z', updatedBy: 'linux@old' },
+          extensions: { updatedAt: '2026-09-15T00:00:01.000Z', updatedBy: 'linux@old' },
+        },
       }),
       'settings.json': '// old\n{"editor.fontSize": 14}',
       'keybindings/linux.json': '[{"key":"ctrl+a","command":"a"}]',
@@ -504,15 +517,17 @@ describe('SyncEngine', () => {
 
     expect(Object.keys(remote.files).sort()).toEqual([
       'meta.json',
-      'profiles/Default/extensions.json',
+      'profiles/Default/extensions.code.json',
       'profiles/Default/keybindings/linux.json',
       'profiles/Default/keybindings/windows.json',
       'profiles/Default/settings.json',
     ]);
     expect(remote.files['profiles/Default/settings.json']).toContain('// old');
     const meta = parseMeta(remote.files['meta.json']);
-    expect(meta.schemaVersion).toBe(2);
+    expect(meta.schemaVersion).toBe(3);
     expect(meta.resources['profiles/Default/settings.json'].updatedBy).toBe('linux@old');
+    // The meta key survived both renames: extensions -> profiles/Default/extensions.json -> .code.json
+    expect(meta.resources['profiles/Default/extensions.code.json'].updatedBy).toBe('linux@old');
     expect(report.outcome).toBe('synced');
     // Nothing else to do afterwards.
     expect((await a.sync()).uploaded).toEqual([]);
@@ -521,7 +536,7 @@ describe('SyncEngine', () => {
   it('retries on top of a concurrent push', async () => {
     const { remote, a } = await twoMachines();
     a.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 14, "editor.tabSize": 4}');
-    remote.beforeCommit = () => remote.push({ 'profiles/Default/extensions.json': '["x.drop", "x.keep", "x.new"]\n' });
+    remote.beforeCommit = () => remote.push({ 'profiles/Default/extensions.code.json': '["x.drop", "x.keep", "x.new"]\n' });
 
     const report = await a.sync();
 
@@ -547,5 +562,79 @@ describe('SyncEngine', () => {
 
     await expect(a.sync()).rejects.toThrow(/syntax errors/);
     expect(remote.messages).toHaveLength(commits);
+  });
+
+  it('shares settings between editors while keeping each editor\'s own keys apart', async () => {
+    const cursorDir = join('/u', 'Cursor');
+    const remote = new FakeRemote();
+    const code = machine(remote, 'code');
+    code.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 14}');
+    await code.sync();
+
+    const cursor = machine(remote, 'cur', { appId: 'cursor', dir: cursorDir });
+    cursor.local.set(join(cursorDir, 'settings.json'), '{"editor.tabSize": 2, "cursor.general.beta": true}');
+    await cursor.sync({ initialChoice: 'merge' });
+
+    expect(parseSettings(remote.files['profiles/Default/settings.json'])).toEqual({
+      'editor.fontSize': 14,
+      'editor.tabSize': 2,
+    });
+    expect(parseSettings(remote.files['profiles/Default/settings.cursor.json'])).toEqual({ 'cursor.general.beta': true });
+
+    await code.sync({ localChanged: false });
+    expect(parseSettings(code.local.files.get(join(USER_DIR, 'settings.json'))?.text)).toEqual({
+      'editor.fontSize': 14,
+      'editor.tabSize': 2,
+    });
+  });
+
+  it('keeps one extension list per editor', async () => {
+    const cursorDir = join('/u', 'Cursor');
+    const remote = new FakeRemote();
+    const code = machine(remote, 'code');
+    code.local.extensions.set('Default', ['a.one']);
+    await code.sync();
+
+    const cursor = machine(remote, 'cur', { appId: 'cursor', dir: cursorDir });
+    cursor.local.extensions.set('Default', ['b.two']);
+    await cursor.sync({ initialChoice: 'merge' });
+
+    expect(JSON.parse(remote.files['profiles/Default/extensions.code.json'])).toEqual(['a.one']);
+    expect(JSON.parse(remote.files['profiles/Default/extensions.cursor.json'])).toEqual(['b.two']);
+
+    // The other editor's list is never installed here, and never removed from the repository.
+    await code.sync({ localChanged: false });
+    expect(code.local.extensions.get('Default')).toEqual(['a.one']);
+    expect(JSON.parse(remote.files['profiles/Default/extensions.cursor.json'])).toEqual(['b.two']);
+  });
+
+  it('gives each editor its own extension list when upgrading a schema 2 repository', async () => {
+    const remote = new FakeRemote({
+      'meta.json': JSON.stringify({
+        schemaVersion: 2,
+        resources: {
+          'profiles/Default/settings.json': { updatedAt: '2026-09-15T00:00:00.000Z', updatedBy: 'linux@old' },
+          'profiles/Default/extensions.json': { updatedAt: '2026-09-15T00:00:01.000Z', updatedBy: 'linux@old' },
+        },
+      }),
+      'profiles/Default/settings.json': '{"editor.fontSize": 14}',
+      'profiles/Default/extensions.json': '["a.one"]',
+    });
+    const a = machine(remote, 'a');
+    a.local.set(join(USER_DIR, 'settings.json'), '{"editor.fontSize": 14}');
+    a.local.extensions.set('Default', ['a.one']);
+
+    await a.sync({ initialChoice: 'merge' });
+
+    expect(Object.keys(remote.files).sort()).toEqual([
+      'meta.json',
+      'profiles/Default/extensions.code.json',
+      'profiles/Default/settings.json',
+    ]);
+    const meta = parseMeta(remote.files['meta.json']);
+    expect(meta.schemaVersion).toBe(3);
+    expect(meta.resources['profiles/Default/extensions.code.json'].updatedBy).toBe('linux@old');
+    expect(meta.resources['profiles/Default/settings.json'].updatedBy).toBe('linux@old');
+    expect((await a.sync()).uploaded).toEqual([]);
   });
 });

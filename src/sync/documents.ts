@@ -79,6 +79,12 @@ export function parseExtensionList(text: string): string[] {
   return normalizeExtensionIds(value as string[]);
 }
 
+/** Plain JSON with sorted keys: app-specific settings files are generated, never hand-edited. */
+export function serializeSettings(settings: JsonObject): string {
+  const sorted = Object.fromEntries(Object.entries(settings).sort(([a], [b]) => a.localeCompare(b)));
+  return `${JSON.stringify(sorted, null, 2)}\n`;
+}
+
 export function serializeExtensionList(ids: readonly string[]): string {
   return `${JSON.stringify(ids, null, 2)}\n`;
 }
@@ -87,7 +93,7 @@ export function emptyMeta(): RemoteMeta {
   return { schemaVersion: SCHEMA_VERSION, resources: {} };
 }
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export function parseMeta(text: string | undefined): RemoteMeta {
   const value = text === undefined ? undefined : (parseJsonc(text, 'meta.json') as Partial<RemoteMeta> | undefined);
@@ -95,7 +101,7 @@ export function parseMeta(text: string | undefined): RemoteMeta {
   if (schemaVersion > SCHEMA_VERSION) {
     throw new Error(`meta.json uses schema version ${schemaVersion}; update Zoo Sync to read it`);
   }
-  return { schemaVersion: schemaVersion === 1 ? 1 : 2, resources: { ...value?.resources } };
+  return { schemaVersion: schemaVersion as RemoteMeta['schemaVersion'], resources: { ...value?.resources } };
 }
 
 export function serializeMeta(meta: RemoteMeta): string {

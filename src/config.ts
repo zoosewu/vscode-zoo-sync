@@ -7,6 +7,9 @@ export interface ZooSyncConfig {
   repository: string;
   profiles: string[];
   files: FileSpec[];
+  /** Empty means auto-detect from the editor. */
+  appId: string;
+  appSettings: Record<string, string[]>;
   branch: string;
   autoSync: boolean;
   remotePollMinutes: number;
@@ -21,6 +24,8 @@ export function readConfig(): ZooSyncConfig {
     repository: config.get<string>('repository', '').trim(),
     profiles: config.get<string[]>('profiles', ['Default']),
     files: config.get<FileSpec[]>('files', []),
+    appId: config.get<string>('appId', '').trim(),
+    appSettings: config.get<Record<string, string[]>>('appSettings', {}),
     branch: config.get<string>('branch', 'main').trim() || 'main',
     autoSync: config.get<boolean>('autoSync', true),
     remotePollMinutes: Math.max(5, config.get<number>('remotePollMinutes', 30)),

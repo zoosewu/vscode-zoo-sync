@@ -19,3 +19,11 @@ export function mapLegacyMetaKey(key: string): string | undefined {
   const match = LEGACY_META_KEYBINDINGS.exec(key);
   return match ? `${LEGACY_PROFILE_DIR}/keybindings/${match[1]}.json` : undefined;
 }
+
+/** Schema 2 kept one extension list per profile; schema 3 keeps one per editor. */
+const SCHEMA2_EXTENSIONS = /^(profiles\/[^/]+)\/extensions\.json$/;
+
+export function mapSchema2Path(path: string, appId: string): string | undefined {
+  const match = SCHEMA2_EXTENSIONS.exec(path);
+  return match ? `${match[1]}/extensions.${appId}.json` : undefined;
+}

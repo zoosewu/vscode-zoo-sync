@@ -1,6 +1,6 @@
 # Zoo Sync
 
-透過**私有 GitHub repository**，在 Windows、macOS、Linux 之間同步 VS Code 的 `settings.json`、`keybindings.json`、擴充套件列表與自訂檔案，並可分 profile 同步。
+透過**私有 GitHub repository**，在 Windows、macOS、Linux 之間同步 VS Code 與 Cursor 的 `settings.json`、`keybindings.json`、擴充套件列表與自訂檔案，並可分 profile 同步。
 
 ## 功能
 
@@ -9,6 +9,7 @@
 - **擴充套件**：只記錄 extension id（不記版本）。遠端新增的會自動安裝；其他機器移除的會先詢問，再決定要不要在這台移除。
 - **自訂檔案**：`zooSync.files` 可以指定 VS Code 使用者目錄底下的檔案（如 `snippets/**`、`tasks.json`）或家目錄的檔案（如 `~/.gitconfig`），支援 glob 與每平台不同路徑。
 - **Profile**：`zooSync.profiles` 列出的每個 profile 各自同步自己的設定、快捷鍵、擴充套件與自訂檔案。
+- **多編輯器**：VS Code 與 Cursor 共用設定、快捷鍵與自訂檔案，擴充套件清單各自獨立。
 - **不會誤判變更**：比對前會把內容正規化（排序 key、去掉註解與格式），`meta.json` 裡的 update time 也不參與比對。內容沒變就不會產生 commit。
 - **衝突處理**：兩邊改到同一個 key（或同一平台的 keybindings）時，保留 update time 較新的一方，並寫進 log。舊的值仍可在 git 歷史中找回。
 
@@ -16,7 +17,7 @@
 
 Zoo Sync 不會發布到 VS Code Marketplace。請從 GitHub Releases 下載 `zoo-sync-<version>.vsix`，再用以下任一方式安裝：
 
-- 在 Extensions 檢視的 `…` 選單選擇 **Install from VSIX…**
+- 在 Extensions 檢視的 `…` 選單選擇 **Install from VSIX…**（VS Code 與 Cursor 皆同）
 - 或在終端機執行：`code --install-extension zoo-sync-<version>.vsix`
 
 ## 使用方式
@@ -68,13 +69,41 @@ Zoo Sync 不會發布到 VS Code Marketplace。請從 GitHub Releases 下載 `zo
 - **擴充套件例外**：VS Code 只能把套件安裝到目前視窗的 profile，也沒有公開 API 能得知目前是哪個 profile。Zoo Sync 會從 VS Code 自己的 `storage.json` 反查（有開資料夾或工作區的視窗才查得到）。清單一律同步；安裝與移除只在能確認 profile 的視窗執行，其餘等你切換過去時再補上。
 - 遠端有、本機沒有的 profile **只會提示，不會自動建立**——profile 清單由 VS Code 主程序管理。請先在 VS Code 裡建立同名 profile。
 
+## VS Code 與 Cursor
+
+兩個編輯器裝上同一個擴充套件、指到同一個 repository 即可。**profile 以名稱配對**：VS Code 的 Default 對 Cursor 的 Default、Work 對 Work。
+
+| 項目 | 行為 |
+|---|---|
+| settings | **共用**，但每個編輯器專屬的 key 另外存放（見下） |
+| keybindings | **共用**。另一個編輯器不認得的指令會被忽略，不會出錯 |
+| 自訂檔案 | **共用** |
+| 擴充套件清單 | **各自一份**（`extensions.code.json`、`extensions.cursor.json`） |
+
+擴充套件之所以不共用，是因為 Cursor 改用 Open VSX，而且官方文件明載：同一個 `publisher.extension` id 在 Open VSX 與 MS Marketplace **可能指向不同的發行者或程式碼**。微軟的閉源套件（Pylance、C/C++、C#、Remote 系列）在 Cursor 也無法使用。
+
+### 編輯器專屬的設定
+
+`zooSync.appSettings` 定義哪些 key 只屬於某個編輯器，預設：
+
+```json
+{ "cursor": ["cursor.*", "anysphere.*"] }
+```
+
+- 屬於自己的 key → 存到 `settings.<app>.json`
+- 屬於別的編輯器的 key → **不上傳、也不寫進本機**，所以 VS Code 的 settings.json 不會冒出 `cursor.*`
+- 其餘 → 共用的 `settings.json`
+
+編輯器代號由 `vscode.env.uriScheme` 自動判斷：VS Code（含 Insiders）是 `code`、Cursor 是 `cursor`、VSCodium 是 `vscodium`。需要時可用 `zooSync.appId` 覆寫——**代號相同的編輯器會共用擴充套件清單**。
+
 ## Repository 結構
 
 ```
 meta.json                                   每個資源的 updatedAt / updatedBy
-profiles/Default/settings.json
+profiles/Default/settings.json               共用設定
+profiles/Default/settings.<app>.json         該編輯器專屬設定
 profiles/Default/keybindings/<platform>.json
-profiles/Default/extensions.json
+profiles/Default/extensions.<app>.json       各編輯器一份
 profiles/Default/files/common/<相對路徑>     自訂檔案
 profiles/Default/files/<platform>/<相對路徑> perPlatform 的版本
 profiles/Work/…                             其他 profile
@@ -83,7 +112,7 @@ files/common/<家目錄相對路徑>                機器層級自訂檔案
 
 commit message 格式：`sync: profiles/Default/settings.json, … from linux@host at 2026-09-16T12:00:00.000Z`
 
-v1.x 建立的 repository（扁平結構）會在第一次同步時自動搬到上面的結構，並保留註解與 update time。
+舊版建立的 repository 會在第一次同步時自動升級（扁平結構 → profile 結構 → 各編輯器獨立的擴充套件清單），並保留註解與 update time。升級後**舊版的 Zoo Sync 會停止同步並提示更新**，這是刻意的保護，請把所有機器都更新到同一版。
 
 ## 設定
 
@@ -92,6 +121,8 @@ v1.x 建立的 repository（扁平結構）會在第一次同步時自動搬到�
 | `zooSync.repository` | `""` | `owner/name` |
 | `zooSync.profiles` | `["Default"]` | 要同步的 profile 名稱 |
 | `zooSync.files` | `[]` | 額外同步的檔案，見上方說明 |
+| `zooSync.appId` | `""` | 編輯器代號，空白為自動判斷 |
+| `zooSync.appSettings` | `{"cursor": [...]}` | 只屬於某個編輯器的設定 key |
 | `zooSync.branch` | `main` | 儲存同步資料的 branch，不存在時會自動建立 |
 | `zooSync.autoSync` | `true` | 自動同步（此設定本身不會被同步） |
 | `zooSync.remotePollMinutes` | `30` | 檢查遠端的間隔 |
@@ -128,6 +159,8 @@ v1.x 建立的 repository（扁平結構）會在第一次同步時自動搬到�
 - **空白視窗**（沒有開資料夾或工作區）無法判斷所屬 profile，因此只同步檔案，不會安裝或移除擴充套件。
 - 在 **Remote 視窗**（SSH、WSL、Dev Containers）中不會安裝或移除擴充套件，因為會裝到遠端主機上。
 - 不同步各擴充套件的內部狀態（`globalStorage`）。
+- 不做跨市集的擴充套件對應（例如 `ms-python.python` 與 Cursor 的替代版本），因為同名 id 可能是不同的程式碼。
+- 若某個編輯器沒有內建 GitHub 登入，狀態列會顯示需要登入並停在該狀態，不會影響本機設定。
 - 在 marketplace 上找不到的擴充套件（例如只提供 VSIX 的套件，或 VSCodium 使用的 Open VSX 上沒有的套件）會安裝失敗。失敗會記錄在 log，但**不會**因此從遠端清單中移除，之後每次完整同步都會重試。
 - `settings.json` 有語法錯誤，或在編輯器中有尚未存檔的修改時，會暫停同步，直到修正或存檔。
 

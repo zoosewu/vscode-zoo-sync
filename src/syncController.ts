@@ -7,6 +7,7 @@ import { GitHubApiError, GitHubClient } from './github/client';
 import { GitHubRepoStore, parseRepository } from './github/repoStore';
 import { VSCodeLocalStore } from './local/vscodeLocalStore';
 import { errorMessage, SyncEngine, type SyncReport } from './sync/engine';
+import { detectAppId } from './sync/apps';
 import { FileLock } from './sync/lock';
 import { buildResourcePlan } from './sync/resources';
 import type { InitialSyncChoice } from './sync/ports';
@@ -76,7 +77,10 @@ export class SyncController implements vscode.Disposable {
     this.watchers.forEach((watcher) => watcher.dispose());
     this.watchers = [];
     const config = readConfig();
-    const plan = buildResourcePlan({ profiles: config.profiles, files: config.files }, this.local.platform);
+    const plan = buildResourcePlan(
+      { profiles: config.profiles, files: config.files, appId: this.appId(config) },
+      this.local.platform,
+    );
     const profiles = await this.local.listProfiles().catch(() => []);
     const byName = new Map(profiles.map((profile) => [profile.name, profile]));
     const targets: { dir: string; pattern: string }[] = [];
@@ -198,7 +202,7 @@ export class SyncController implements vscode.Disposable {
     if (answer !== 'Reset') {
       return;
     }
-    await new FileStateStore(this.statePath, '', this.local.platform).clear();
+    await new FileStateStore(this.statePath, '', this.local.platform, this.appId(readConfig())).clear();
     this.initialChoiceDismissed = false;
     void vscode.window.showInformationMessage('Zoo Sync state was reset.');
   }
@@ -262,6 +266,11 @@ export class SyncController implements vscode.Disposable {
 
   showLog(): void {
     this.log.show();
+  }
+
+  /** VS Code, Cursor and other forks keep separate extension lists; see src/sync/apps.ts. */
+  private appId(config: ZooSyncConfig): string {
+    return detectAppId(vscode.env.uriScheme, config.appId);
   }
 
   private reschedule(): void {
@@ -343,6 +352,7 @@ export class SyncController implements vscode.Disposable {
   ): Promise<SyncEngine> {
     const store = new GitHubRepoStore(new GitHubClient(token), target.owner, target.repo, config.branch);
     const repositoryKey = `${target.owner}/${target.repo}@${config.branch}`;
+    const appId = this.appId(config);
     if (this.ensuredRepository !== repositoryKey) {
       await store.ensureRepository();
       this.ensuredRepository = repositoryKey;
@@ -350,9 +360,11 @@ export class SyncController implements vscode.Disposable {
     return new SyncEngine({
       local: this.local,
       remote: store,
-      state: new FileStateStore(this.statePath, repositoryKey, this.local.platform),
+      state: new FileStateStore(this.statePath, repositoryKey, this.local.platform, appId),
       logger: this.log,
       config: {
+        appId,
+        appSettings: config.appSettings,
         profiles: config.profiles,
         files: config.files,
         ignoredSettings: config.ignoredSettings,

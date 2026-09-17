@@ -1,11 +1,11 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { canonicalize } from './canonical';
-import { mapLegacyMetaKey } from './legacy';
+import { mapLegacyMetaKey, mapSchema2Path } from './legacy';
 import { emptyState, type LocalState, type StateStore } from './ports';
 import type { BaseResource, JsonObject, Platform, RemoteMeta } from './types';
 
-const VERSION = 2;
+const VERSION = 3;
 
 interface StateFile extends LocalState {
   version: number;
@@ -38,6 +38,7 @@ export class FileStateStore implements StateStore {
     private readonly file: string,
     private readonly repository: string,
     private readonly platform: Platform,
+    private readonly appId: string = 'code',
   ) {}
 
   async read(): Promise<LocalState> {
@@ -53,8 +54,9 @@ export class FileStateStore implements StateStore {
     if (data.repository !== this.repository) {
       return emptyState();
     }
-    if ((data.version ?? 1) < VERSION) {
-      return this.upgrade(data);
+    const version = data.version ?? 1;
+    if (version < VERSION) {
+      return this.upgrade(data, version);
     }
     return {
       base: data.base,
@@ -76,8 +78,30 @@ export class FileStateStore implements StateStore {
     await rm(this.file, { force: true });
   }
 
-  /** Renames schema 1 state onto the profile layout; blob ids are unknown, so files are read once more. */
-  private upgrade(data: LegacyStateFile): LocalState {
+  /** Renames older state onto the current layout; blob ids are unknown, so files are read once more. */
+  private upgrade(data: LegacyStateFile & Partial<StateFile>, version: number): LocalState {
+    if (version === 2) {
+      return {
+        base: data.base && {
+          ...data.base,
+          resources: Object.fromEntries(
+            Object.entries(data.base.resources).map(([path, entry]) => [mapSchema2Path(path, this.appId) ?? path, entry]),
+          ),
+          meta: {
+            schemaVersion: 3,
+            resources: Object.fromEntries(
+              Object.entries(data.base.meta?.resources ?? {}).map(([key, value]) => [
+                mapSchema2Path(key, this.appId) ?? key,
+                value,
+              ]),
+            ),
+          },
+        },
+        extensions: data.extensions ?? {},
+        pendingDeletions: data.pendingDeletions ?? [],
+        localOnlyFiles: data.localOnlyFiles ?? [],
+      };
+    }
     const state = emptyState();
     if (data.localOnlyExtensions?.length || data.pendingUninstall?.length || data.unavailableExtensions?.length) {
       state.extensions.Default = {
@@ -91,12 +115,13 @@ export class FileStateStore implements StateStore {
       return state;
     }
     // A hand-edited or truncated legacy file may be missing pieces; those simply have no base entry.
+    const extensionsPath = `profiles/Default/extensions.${this.appId}.json`;
     const resources: Record<string, BaseResource> = {};
     if (legacy.settings) {
       resources['profiles/Default/settings.json'] = { canonical: canonicalize(legacy.settings), blobSha: '' };
     }
     if (legacy.extensions) {
-      resources['profiles/Default/extensions.json'] = { canonical: canonicalize(legacy.extensions), blobSha: '' };
+      resources[extensionsPath] = { canonical: canonicalize(legacy.extensions), blobSha: '' };
     }
     if (typeof legacy.keybindings === 'string') {
       resources[`profiles/Default/keybindings/${this.platform}.json`] = {
@@ -108,13 +133,13 @@ export class FileStateStore implements StateStore {
     for (const [key, value] of Object.entries(legacy.meta?.resources ?? {})) {
       const mapped = mapLegacyMetaKey(key);
       if (mapped) {
-        metaResources[mapped] = value;
+        metaResources[mapSchema2Path(mapped, this.appId) ?? mapped] = value;
       }
     }
     state.base = {
       commitSha: legacy.commitSha,
       resources,
-      meta: { schemaVersion: 2, resources: metaResources },
+      meta: { schemaVersion: 3, resources: metaResources },
     };
     return state;
   }

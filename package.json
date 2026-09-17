@@ -106,6 +106,29 @@
           "markdownDescription": "Extra files to sync. A relative path is synced inside every profile (`snippets/**`, `tasks.json`); a path starting with `~/` is synced once per machine (`~/.gitconfig`). Use `{ \"path\": \"~/.config/x.toml\", \"perPlatform\": true }` to keep one copy per platform, and `{ \"path\": { \"windows\": \"…\", \"*\": \"…\" } }` when the path differs per platform. `*` matches within a folder, `**` crosses folders. Files over 1 MB, binaries, and names that look like credentials are skipped.",
           "scope": "application"
         },
+        "zooSync.appId": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Overrides how this editor is identified in the repository. Empty means auto-detect: VS Code (Stable and Insiders) is `code`, Cursor is `cursor`, VSCodium is `vscodium`. Editors sharing an id share their extension list, so only change this if you know why.",
+          "scope": "application"
+        },
+        "zooSync.appSettings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": {
+            "cursor": [
+              "cursor.*",
+              "anysphere.*"
+            ]
+          },
+          "markdownDescription": "Setting keys that belong to one editor only, keyed by app id. They are stored in `settings.<app>.json` instead of the shared `settings.json`, so `cursor.*` keys never reach VS Code and vice versa. `*` matches any characters.",
+          "scope": "application"
+        },
         "zooSync.branch": {
           "type": "string",
           "default": "main",
@@ -139,6 +162,7 @@
           },
           "default": [
             "zooSync.autoSync",
+            "zooSync.appId",
             "http.proxy*",
             "*.path",
             "*Path",

@@ -12,8 +12,8 @@ export interface ResourceMeta {
 
 /** Content of `meta.json`. Never part of content comparison. */
 export interface RemoteMeta {
-  /** 1 was the flat, single-profile layout; 2 keys everything by remote path. */
-  schemaVersion: 1 | 2;
+  /** 1 was flat and single-profile, 2 added profiles, 3 gives each editor its own extension list. */
+  schemaVersion: 1 | 2 | 3;
   /** Keyed by remote path in schema 2. */
   resources: Record<string, ResourceMeta>;
 }

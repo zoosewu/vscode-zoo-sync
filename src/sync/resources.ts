@@ -9,8 +9,10 @@ export interface BuiltinResource {
   kind: 'settings' | 'keybindings' | 'extensions';
   profile: string;
   remotePath: string;
-  /** Path inside the profile directory. Extensions come from VS Code's own manifests instead. */
+  /** Path inside the profile directory. Extensions come from the editor's own manifests instead. */
   relativePath?: string;
+  /** Settings only: the shared file, or the file holding this app's own keys. */
+  bucket?: 'shared' | 'app';
 }
 
 export interface FilePattern {
@@ -49,23 +51,39 @@ export function relativeFromRemote(pattern: FilePattern, remotePath: string): st
 
 /** Expands the configuration into everything that is synced for this platform. */
 export function buildResourcePlan(
-  config: { profiles: readonly string[]; files: readonly FileSpec[] },
+  config: { profiles: readonly string[]; files: readonly FileSpec[]; appId: string },
   platform: Platform,
 ): ResourcePlan {
   const problems: string[] = [];
   const profiles = normalizeProfiles(config.profiles, problems);
 
+  // Settings and keybindings are shared between editors; extensions are not, because Cursor and
+  // VS Code use different marketplaces where the same id can point at different code.
+  const app = config.appId;
   const builtins: BuiltinResource[] = [];
   for (const profile of profiles) {
     const dir = profileRemoteDir(profile);
-    builtins.push({ kind: 'settings', profile, remotePath: `${dir}/settings.json`, relativePath: 'settings.json' });
+    builtins.push({
+      kind: 'settings',
+      profile,
+      remotePath: `${dir}/settings.json`,
+      relativePath: 'settings.json',
+      bucket: 'shared',
+    });
+    builtins.push({
+      kind: 'settings',
+      profile,
+      remotePath: `${dir}/settings.${app}.json`,
+      relativePath: 'settings.json',
+      bucket: 'app',
+    });
     builtins.push({
       kind: 'keybindings',
       profile,
       remotePath: `${dir}/keybindings/${platform}.json`,
       relativePath: 'keybindings.json',
     });
-    builtins.push({ kind: 'extensions', profile, remotePath: `${dir}/extensions.json` });
+    builtins.push({ kind: 'extensions', profile, remotePath: `${dir}/extensions.${app}.json` });
   }
 
   const caseSensitive = isCaseSensitive(platform);
